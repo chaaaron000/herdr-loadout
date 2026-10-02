@@ -18,6 +18,9 @@ function withEmptyState(fn) {
   }
 }
 
+const win = path.win32;
+const posix = path.posix;
+
 const winEnv = {
   PATH: ["C:\\tools\\bin", "C:\\other"].join(";"),
   PATHEXT: ".COM;.EXE;.BAT;.CMD;.PS1",
@@ -25,24 +28,24 @@ const winEnv = {
 
 test("which resolves a bare executable on PATH", () => {
   const fs = memoryFs({
-    [path.resolve("C:/tools/bin/claude.exe")]: "",
+    [win.resolve("C:/tools/bin/claude.exe")]: "",
   });
   const found = which("claude", { env: winEnv, fs, platform: "win32" });
-  assert.equal(found, path.resolve("C:/tools/bin/claude.exe"));
+  assert.equal(found, win.resolve("C:/tools/bin/claude.exe"));
 });
 
 test("which honours PATHEXT order and prefers the first match", () => {
   const fs = memoryFs({
-    [path.resolve("C:/tools/bin/codex.cmd")]: "",
-    [path.resolve("C:/other/codex.exe")]: "",
+    [win.resolve("C:/tools/bin/codex.cmd")]: "",
+    [win.resolve("C:/other/codex.exe")]: "",
   });
   const found = which("codex", { env: winEnv, fs, platform: "win32" });
-  assert.equal(found, path.resolve("C:/tools/bin/codex.cmd"), "PATH order wins over extension order");
+  assert.equal(found, win.resolve("C:/tools/bin/codex.cmd"), "PATH order wins over extension order");
 });
 
 test("which finds .cmd shims that have no extension", () => {
   const fs = memoryFs({
-    [path.resolve("C:/tools/bin/opencode.cmd")]: "",
+    [win.resolve("C:/tools/bin/opencode.cmd")]: "",
   });
   assert.ok(which("opencode", { env: winEnv, fs, platform: "win32" }));
 });
@@ -53,13 +56,13 @@ test("which returns null for missing tools", () => {
 });
 
 test("which accepts POSIX-style lookups without extensions", () => {
-  const fs = memoryFs({ [path.resolve("/usr/local/bin/claude")]: "" });
+  const fs = memoryFs({ [posix.resolve("/usr/local/bin/claude")]: "" });
   const found = which("claude", { env: { PATH: "/usr/local/bin:/usr/bin" }, fs, platform: "linux" });
-  assert.equal(found, path.resolve("/usr/local/bin/claude"));
+  assert.equal(found, posix.resolve("/usr/local/bin/claude"));
 });
 
 test("detectHarnesses reports every known harness with candidates", () => {
-  const fs = memoryFs({ [path.resolve("C:/tools/bin/omp.exe")]: "" });
+  const fs = memoryFs({ [win.resolve("C:/tools/bin/omp.exe")]: "" });
   const result = detectHarnesses({ env: { ...winEnv, PATH: "C:\\tools\\bin" }, fs, platform: "win32" });
   const byId = new Map(result.map((entry) => [entry.id, entry]));
   assert.equal(byId.get("omp").detected, true);
@@ -207,12 +210,12 @@ test("listModels reports a derived catalog for claude when omp is present", () =
 test("preferNoSpaces picks a launchable path when the first match has a space", () => {
   // measured: an nvm layout puts .cmd shims under "Author Software", and
   // `herdr agent start` cannot launch a path containing a space
-  const spaced = path.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
-  const clean = path.resolve("C:/Users/x/nvm/.nodejs/codex.exe");
+  const spaced = win.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
+  const clean = win.resolve("C:/Users/x/nvm/.nodejs/codex.exe");
   const env = {
     PATH: [
-      path.dirname(spaced),
-      path.dirname(clean),
+      win.dirname(spaced),
+      win.dirname(clean),
     ].join(";"),
     PATHEXT: ".EXE;.CMD",
   };
@@ -225,24 +228,24 @@ test("preferNoSpaces picks a launchable path when the first match has a space", 
 });
 
 test("preferNoSpaces still returns the spaced path when nothing else exists", () => {
-  const spaced = path.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
-  const env = { PATH: path.dirname(spaced), PATHEXT: ".CMD" };
+  const spaced = win.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
+  const env = { PATH: win.dirname(spaced), PATHEXT: ".CMD" };
   const fs = memoryFs({ [spaced]: "" });
   assert.equal(which("codex", { env, fs, platform: "win32", preferNoSpaces: true }), spaced);
 });
 
 test("preferNoSpaces is ignored on POSIX", () => {
-  const dir = path.resolve("/usr/local/bin");
+  const dir = posix.resolve("/usr/local/bin");
   const env = { PATH: dir };
-  const fs = memoryFs({ [path.join(dir, "codex")]: "" });
-  assert.equal(which("codex", { env, fs, platform: "linux", preferNoSpaces: true }), path.join(dir, "codex"));
+  const fs = memoryFs({ [posix.join(dir, "codex")]: "" });
+  assert.equal(which("codex", { env, fs, platform: "linux", preferNoSpaces: true }), posix.join(dir, "codex"));
 });
 
 test("dryRun prefers a launchable path over an nvm wrapper's spaced shim on Windows", () => {
-  const spaced = path.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
-  const clean = path.resolve("C:/Users/x/nvm/.nodejs/codex.exe");
+  const spaced = win.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
+  const clean = win.resolve("C:/Users/x/nvm/.nodejs/codex.exe");
   const env = {
-    PATH: [path.dirname(spaced), path.dirname(clean)].join(";"),
+    PATH: [win.dirname(spaced), win.dirname(clean)].join(";"),
     PATHEXT: ".EXE;.CMD",
   };
   const fs = memoryFs({ [spaced]: "", [clean]: "" });
@@ -259,8 +262,8 @@ test("dryRun prefers a launchable path over an nvm wrapper's spaced shim on Wind
 });
 
 test("dryRun flags an unlaunchable spaced path on Windows when no alternative exists", () => {
-  const spaced = path.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
-  const env = { PATH: path.dirname(spaced), PATHEXT: ".CMD" };
+  const spaced = win.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
+  const env = { PATH: win.dirname(spaced), PATHEXT: ".CMD" };
   const fs = memoryFs({ [spaced]: "" });
   const result = dryRun(
     { id: "r", harness: "codex", effort: "low" },

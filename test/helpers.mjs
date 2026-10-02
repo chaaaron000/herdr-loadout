@@ -18,7 +18,12 @@ export function memoryFs(initial = {}) {
   const files = new Map(Object.entries(initial));
   const dirs = new Set();
 
-  const normalize = (value) => path.resolve(value);
+  // Keys follow the shape of the path, so a test can simulate Windows or POSIX
+  // lookups on any host. Real host paths resolve exactly as path.resolve does.
+  const normalize = (value) =>
+    /^[A-Za-z]:[\\/]/.test(value) ? path.win32.resolve(value)
+      : value.startsWith("/") ? path.posix.resolve(value)
+      : path.resolve(value);
 
   return {
     files,

@@ -41,9 +41,11 @@ export function which(command, options = {}) {
   const fsImpl = options.fs ?? fs;
   const platform = options.platform ?? process.platform;
   const isWin = platform === "win32";
+  // Follow the simulated platform, not the host: identical on a real machine.
+  const p = isWin ? path.win32 : path.posix;
 
   if (command.includes("/") || command.includes("\\")) {
-    return fsImpl.existsSync(command) ? path.resolve(command) : null;
+    return fsImpl.existsSync(command) ? p.resolve(command) : null;
   }
 
   const dirs = (env.PATH ?? "").split(isWin ? ";" : ":").filter(Boolean);
@@ -53,8 +55,8 @@ export function which(command, options = {}) {
   const found = [];
   for (const dir of dirs) {
     for (const ext of extensions) {
-      const candidate = path.join(dir, command + ext);
-      if (fsImpl.existsSync(candidate)) found.push(path.resolve(candidate));
+      const candidate = p.join(dir, command + ext);
+      if (fsImpl.existsSync(candidate)) found.push(p.resolve(candidate));
     }
   }
   if (found.length === 0) return null;
