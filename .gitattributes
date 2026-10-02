@@ -1,0 +1,9 @@
+# Skill files are consumed by agents and copied verbatim into a skills library,
+# where a CRLF/LF difference reads as a content change. Keep them LF everywhere.
+*.md text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+
+# Git hooks run under sh; CRLF would break the shebang.
+.githooks/* text eol=lf

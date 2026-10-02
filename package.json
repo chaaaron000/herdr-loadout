@@ -1,0 +1,25 @@
+{
+  "name": "herdr-loadout",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Lightweight agent profile registry plugin for Herdr",
+  "bin": {
+    "herdr-loadout": "bin/herdr-loadout.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "ui": "node bin/ui.mjs",
+    "check:privacy": "node scripts/check-privacy.mjs",
+    "setup:hooks": "git config core.hooksPath .githooks"
+  },
+  "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.2.0",
+    "smol-toml": "^1.9.0"
+  }
+}

@@ -1,0 +1,80 @@
+id = "herdr-loadout"
+name = "Herdr Loadout"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Agent profile registry: define which harness, model, and effort each role uses."
+platforms = ["windows", "linux", "macos"]
+
+# `herdr plugin install` clones the repo without node_modules (gitignored), and
+# every command imports ink / react / smol-toml. Herdr runs [[build]] after the
+# install confirmation and before registering the plugin; `plugin link` skips
+# it, so local checkouts run `npm ci` themselves. Requires Node >= 22 and npm.
+[[build]]
+command = ["npm", "ci", "--omit=dev"]
+
+# Keeps launchers the user already installed pointing at this checkout after a
+# reinstall moves it. It rewrites existing files only and never creates any.
+[[startup]]
+command = ["node", "bootstrap.mjs", "scripts/setup-shim.mjs", "--refresh"]
+
+# Pane commands run with the pane's cwd, which is not the plugin directory when
+# a caller passes --cwd. bootstrap.mjs resolves modules from HERDR_PLUGIN_ROOT
+# so every command works from any directory.
+
+[[actions]]
+id = "open-ui"
+title = "Open agent profiles"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "bin/ui.mjs"]
+
+[[actions]]
+id = "open-ui-popup"
+title = "Open agent profiles (popup)"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "bin/ui.mjs", "--placement", "popup"]
+
+[[actions]]
+id = "list-compact"
+title = "List profiles (compact)"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "bin/herdr-loadout.mjs", "list", "--compact"]
+
+[[actions]]
+id = "install-shim"
+title = "Install herdr-loadout command"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "scripts/setup-shim.mjs"]
+
+# Non-interactive write path for agents: create a profile from a payload file.
+# Actions cannot take arguments, so the payload comes from a file that the
+# caller writes first. Prefer the CLI (`herdr-loadout add --from <file>`) when
+# arguments are needed.
+[[actions]]
+id = "add-profile"
+title = "Add profile from file"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "bin/herdr-loadout.mjs", "add", "--from", "profile.json"]
+
+[[actions]]
+id = "list-profiles-json"
+title = "List profiles (JSON)"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["node", "bootstrap.mjs", "bin/herdr-loadout.mjs", "list", "--json"]
+
+[[panes]]
+id = "ui"
+title = "Agent Profiles"
+placement = "overlay"
+command = ["node", "bootstrap.mjs", "bin/ui.mjs", "--in-pane"]
+
+# Popup variant. The editor needs room for nine fields plus a scrolling model
+# list; measured at 60%x40% the pane is only 85x16 and overflows, so this one
+# asks for most of the screen. The TUI also adapts its own layout, so a smaller
+# terminal still renders without losing the cursor.
+[[panes]]
+id = "ui-popup"
+title = "Agent Profiles"
+placement = "popup"
+width = "90%"
+height = "80%"
+command = ["node", "bootstrap.mjs", "bin/ui.mjs", "--in-pane"]

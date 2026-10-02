@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit that adds personal data or machine-specific absolute paths.
+# Enable once per clone:  git config core.hooksPath .githooks
+exec node scripts/check-privacy.mjs --staged

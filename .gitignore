@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.log
+.env
+.DS_Store
+Thumbs.db
+graft/
+
+# Local agent / editor tooling. These carry machine-specific paths and settings,
+# so they stay out of the repo even when a contributor uses the same tools.
+.claude/
+.mcp.json
+opencode.json
+.opencode/
+.codex/
+.omp/
+.cursor/
+.ignore
+CLAUDE.md
+*.local.*
+
+# Per-project profile overrides created while developing this plugin.
+.herdr/
+
+# Scratch and design notes that were never meant to ship.
+herdr_agent_profile_plugin_requirements.md
