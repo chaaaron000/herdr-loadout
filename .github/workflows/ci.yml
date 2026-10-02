@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Same install as `herdr plugin install`: the manifest's [[build]] step.
+      - name: Install like a plugin install
+        run: npm ci --omit=dev
+
+      - name: Smoke test the CLI
+        run: node bin/herdr-loadout.mjs list --compact
+
+      - name: Unit tests
+        run: npm test
+
+  privacy:
+    name: privacy guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Generic rules only here (home paths, drive paths, e-mails, secrets).
+      # Identity checks need the author's machine, so the local hooks cover those.
+      - name: Working tree
+        run: node scripts/check-privacy.mjs
+      - name: Full history
+        run: node scripts/check-privacy.mjs --history
