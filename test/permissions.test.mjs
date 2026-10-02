@@ -82,8 +82,8 @@ test("inherited permissions preserve user env and bad OpenCode JSON fails explic
 });
 
 test("dry-run exposes effective permissions and env, and rejects invalid merged policies", () => {
-  const executable = path.resolve("test-bin/opencode.cmd");
-  const options = { fs: memoryFs({ [executable]: "" }), env: { PATH: path.dirname(executable), PATHEXT: ".CMD" }, platform: "win32", cache: false, offline: true };
+  const executable = path.win32.resolve("C:/test-bin/opencode.cmd");
+  const options = { fs: memoryFs({ [executable]: "" }), env: { PATH: path.win32.dirname(executable), PATHEXT: ".CMD" }, platform: "win32", cache: false, offline: true };
   const result = dryRun({ harness: "opencode", permission_mode: "deny" }, options);
   assert.equal(result.ok, true);
   assert.deepEqual(JSON.parse(result.env.OPENCODE_CONFIG_CONTENT), { permission: "deny" });
