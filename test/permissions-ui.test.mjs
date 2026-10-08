@@ -16,7 +16,7 @@ for (const scenario of [
 ]) {
 test(`TUI edits and saves ${scenario.harness} ${scenario.field} with only supported fields visible`, async () => {
   const dir = tempDir();
-  const keys = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "PATH"];
+  const keys = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "HERDR_LOADOUT_OFFLINE", "PATH"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const stdin = new PassThrough();
   stdin.isTTY = true;
@@ -34,6 +34,7 @@ test(`TUI edits and saves ${scenario.harness} ${scenario.field} with only suppor
   try {
     process.env.HERDR_PLUGIN_CONFIG_DIR = dir;
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(dir, "state");
+    process.env.HERDR_LOADOUT_OFFLINE = "1"; // no catalog refresh over the network
     process.env.PATH = ""; // Catalog fallback only; never start a real harness.
     const config = path.join(dir, "loadout.toml");
     fs.writeFileSync(config, `version = 1\n[[profiles]]\nid = "ui-test"\nname = "UI Test"\nharness = "${scenario.harness}"\nmodel = "test-model"\neffort = "high"\nwhen_to_use = "Test editing."\n${scenario.field} = "${scenario.initial}"\n`);

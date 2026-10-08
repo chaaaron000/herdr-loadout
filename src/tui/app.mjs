@@ -4,13 +4,13 @@
  * Runs inside a Herdr plugin pane, which provides a real PTY. The pane closes
  * when this process exits, so the app stays resident until the user quits.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { deleteProfile, ensureGlobalConfig, loadConfig, upsertProfile } from "../core/store.mjs";
 import { diffFields, mergeProfiles, overrideDelta, patchProfile, sameValue } from "../core/merge.mjs";
 import { COSTS, KNOWN_HARNESSES } from "../core/schema.mjs";
 import { findProjectConfig, globalConfigPath, projectConfigPath } from "../core/paths.mjs";
-import { detectHarnesses, dryRun, effortLevels, listModels } from "../core/detect.mjs";
+import { detectHarnesses, dryRun, effortLevels, listModelsAsync } from "../core/detect.mjs";
 import { visibleWindow } from "../core/window.mjs";
 import { layoutFor, listWindow as listWindowFor } from "../core/layout.mjs";
 import { pickerView, nextSort, SORT_LABELS } from "../core/picker.mjs";
@@ -49,32 +49,6 @@ function useTerminalLayout() {
  */
 function scrollOffset(total, cursor, offset) {
   return visibleWindow(total, cursor, optionWindowHeight(), offset).offset;
-}
-
-function useCatalog(harness, enabled) {
-  const [state, setState] = useState({ loading: false, models: [], error: null, noCatalog: false, efforts: [] });
-  useEffect(() => {
-    if (!enabled || !harness) return undefined;
-    let cancelled = false;
-    setState((prev) => ({ ...prev, loading: true }));
-    // run off the render path; catalogs may spawn a CLI
-    const timer = setTimeout(() => {
-      const catalog = listModels(harness);
-      if (cancelled) return;
-      setState({
-        loading: false,
-        models: catalog.models,
-        error: catalog.ok && catalog.models.length > 0 ? null : catalog.error ?? null,
-        noCatalog: Boolean(catalog.noCatalog),
-        efforts: effortLevels(harness, { models: catalog.models }),
-      });
-    }, 10);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [harness, enabled]);
-  return state;
 }
 
 function Field({ label, value, width = 44, active = false, differs = false }) {
@@ -492,13 +466,42 @@ export default function App({ initialProject }) {
     setDetection(detectHarnesses());
   }, []);
 
-  const currentHarness = draft?.harness ?? profiles[selected]?.harness;
-  const activeCatalog = useCatalog(currentHarness, true);
-
+  // Catalogs load on demand and off the event loop: a harness CLI can take the
+  // better part of a second, and the pane must keep taking keys meanwhile. Each
+  // harness is asked once per session.
+  const requested = useRef(new Set());
+  const abort = useRef(null);
   useEffect(() => {
-    if (!currentHarness) return;
-    setCatalogs((prev) => ({ ...prev, [currentHarness]: { models: activeCatalog.models, error: activeCatalog.error, noCatalog: activeCatalog.noCatalog } }));
-  }, [currentHarness, activeCatalog.models, activeCatalog.error]);
+    abort.current = new AbortController();
+    // Quitting must not wait on a CLI that is still listing models.
+    return () => abort.current.abort();
+  }, []);
+  const ensureCatalog = (harness) => {
+    if (!harness || requested.current.has(harness)) return;
+    requested.current.add(harness);
+    const signal = abort.current.signal;
+    listModelsAsync(harness, { signal }).then((catalog) => {
+      if (signal.aborted) return;
+      setCatalogs((prev) => ({
+        ...prev,
+        [harness]: {
+          models: catalog.models,
+          error: catalog.ok && catalog.models.length > 0 ? null : catalog.error ?? null,
+          noCatalog: Boolean(catalog.noCatalog),
+        },
+      }));
+    });
+  };
+
+  // The list never needs a catalog; only the editor's pickers and the detect view do.
+  const editorHarness = tab === "edit" ? draft?.harness : undefined;
+  useEffect(() => {
+    ensureCatalog(editorHarness);
+  }, [editorHarness]);
+  useEffect(() => {
+    if (tab !== "detect") return;
+    for (const entry of detection) if (entry.detected) ensureCatalog(entry.id);
+  }, [tab, detection]);
 
   const selectedProfile = profiles[selected] ?? null;
   const fields = editableFields(draft);

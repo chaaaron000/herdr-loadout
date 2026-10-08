@@ -130,6 +130,9 @@ async function main(argv) {
   }
 
   await renderInk(resolveProjectRoot(values.project));
+  // The pane closes when this process exits; do not hold it open for a catalog
+  // lookup or refresh that is still in flight.
+  process.exit(0);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

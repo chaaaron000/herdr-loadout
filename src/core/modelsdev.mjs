@@ -28,14 +28,23 @@ function snapshotFile(env) {
 
 /** Read the cached snapshot, or null when absent/stale. */
 export function readSnapshot(options = {}) {
-  const env = options.env ?? process.env;
   const maxAge = options.maxAgeMs ?? CATALOG_TTL_MS;
+  const entry = readSnapshotEntry(options);
+  return entry && entry.ageMs <= maxAge ? entry.data : null;
+}
+
+/**
+ * The cached snapshot whatever its age, so a caller can serve an expired one
+ * while it refreshes. Null when absent or unreadable.
+ * @returns {{data: object, ageMs: number}|null}
+ */
+export function readSnapshotEntry(options = {}) {
+  const env = options.env ?? process.env;
   try {
     const raw = fs.readFileSync(snapshotFile(env), "utf8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed?.fetchedAt !== "number") return null;
-    if (Date.now() - parsed.fetchedAt > maxAge) return null;
-    return parsed.data ?? null;
+    if (typeof parsed?.fetchedAt !== "number" || !parsed.data) return null;
+    return { data: parsed.data, ageMs: Date.now() - parsed.fetchedAt };
   } catch {
     return null;
   }

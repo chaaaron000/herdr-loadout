@@ -52,7 +52,7 @@ const ESC = "\u001b";
 /** Run the TUI against a temp global config and a temp project with its own config. */
 async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
   const dir = tempDir();
-  const keys = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "PATH"];
+  const keys = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "HERDR_LOADOUT_OFFLINE", "PATH"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const stdin = new PassThrough();
   stdin.isTTY = true;
@@ -71,6 +71,7 @@ async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
   try {
     process.env.HERDR_PLUGIN_CONFIG_DIR = dir;
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(dir, "state");
+    process.env.HERDR_LOADOUT_OFFLINE = "1"; // no catalog refresh over the network
     process.env.PATH = ""; // never start a real harness
     const globalFile = path.join(dir, "loadout.toml");
     const projectRoot = path.join(dir, "proj");

@@ -4,16 +4,17 @@
  * Every adapter is best-effort: detection and model catalogs may fail without
  * blocking profile creation. Model listing is cached in the state directory.
  */
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { stateDir } from "./paths.mjs";
 import { KNOWN_HARNESSES } from "./schema.mjs";
 import { buildLaunchEnv, PERMISSION_FIELDS, permissionArgs, permissionValue, validatePermissions } from "./permissions.mjs";
 
-import { loadCatalog, modelsForProvider, readSnapshot } from "./modelsdev.mjs";
+import { CATALOG_TTL_MS, fetchCatalog, loadCatalog, modelsForProvider, readSnapshot, readSnapshotEntry } from "./modelsdev.mjs";
 
-export const CACHE_TTL_MS = 5 * 60 * 1000;
+/** A harness's model list changes rarely; `detect --refresh` forces a new read. */
+export const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** Harness executables to look for, in probe order. */
 export const HARNESS_EXECUTABLES = {
@@ -112,7 +113,7 @@ function writeCache(id, env, models) {
  * `.ps1` scripts cannot be spawned directly, so route them through their
  * interpreter with argument arrays (no shell string interpolation).
  */
-function spawnResolved(executablePath, args, options) {
+function resolveSpawn(executablePath, args, options) {
   const env = options.env ?? process.env;
   const timeout = options.timeoutMs ?? 15000;
   const lower = String(executablePath).toLowerCase();
@@ -129,6 +130,11 @@ function spawnResolved(executablePath, args, options) {
     argv = ["-NoProfile", "-NonInteractive", "-File", executablePath, ...args];
   }
 
+  return { file, argv, env, timeout };
+}
+
+function spawnResolved(executablePath, args, options) {
+  const { file, argv, env, timeout } = resolveSpawn(executablePath, args, options);
   return execFileSync(file, argv, {
     encoding: "utf8",
     timeout,
@@ -147,6 +153,31 @@ function run(command, args, options = {}) {
   } catch (error) {
     return { ok: false, error: error.message, stdout: error.stdout ?? "" };
   }
+}
+
+/**
+ * `run` without blocking the event loop, for the interactive UI. Resolves to
+ * the same shape and never rejects. `options.signal` kills the child.
+ */
+function runAsync(command, args, options = {}) {
+  const executable = options.executablePath ?? command;
+  return new Promise((resolve) => {
+    try {
+      const { file, argv, env, timeout } = resolveSpawn(executable, args, options);
+      const child = execFile(
+        file,
+        argv,
+        { encoding: "utf8", timeout, env, windowsHide: true, signal: options.signal },
+        (error, stdout) => {
+          if (error) resolve({ ok: false, error: error.message, stdout: stdout ?? "" });
+          else resolve({ ok: true, stdout });
+        },
+      );
+      child.stdin?.end();
+    } catch (error) {
+      resolve({ ok: false, error: error.message, stdout: "" });
+    }
+  });
 }
 
 /**
@@ -248,9 +279,14 @@ export function claudeCatalogFromOmp(options = {}) {
   if (!ompPath) return null;
   const result = run(ompPath, ["models", "--json"], { ...options, env, executablePath: ompPath, timeoutMs: options.timeoutMs ?? 20000 });
   if (!result.ok) return null;
+  return parseOmpAnthropic(result.stdout);
+}
+
+/** claude's rows from `omp models --json` output, or null when it has none. */
+function parseOmpAnthropic(stdout) {
   let data;
   try {
-    data = JSON.parse(result.stdout);
+    data = JSON.parse(stdout);
   } catch {
     return null;
   }
@@ -366,6 +402,10 @@ export function listModels(harness, options = {}) {
   }
   const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
   const result = run(executablePath, catalog.args, { ...options, env, executablePath });
+  return catalogFromOutput(harness, catalog, result, useCache, env);
+}
+
+function catalogFromOutput(harness, catalog, result, useCache, env) {
   if (!result.ok) return { ok: false, models: [], error: result.error };
   try {
     const models = catalog.parse(result.stdout);
@@ -375,6 +415,60 @@ export function listModels(harness, options = {}) {
   } catch (error) {
     return { ok: false, models: [], error: `parse failed: ${error.message}` };
   }
+}
+
+/**
+ * `listModels` for the interactive UI: same result, but a harness CLI runs
+ * without blocking the event loop, so the pane keeps taking keys meanwhile.
+ *
+ * claude differs from the sync form in two ways that keep it fast: its derived
+ * rows are cached like any other harness, and an expired models.dev snapshot is
+ * still served while a fresh one is fetched in the background for next time.
+ * `options.offline` (or HERDR_LOADOUT_OFFLINE=1) suppresses that fetch.
+ * @returns {Promise<{ok: boolean, models: object[], error?: string, cached?: boolean}>}
+ */
+export async function listModelsAsync(harness, options = {}) {
+  const env = options.env ?? process.env;
+  const useCache = options.cache !== false;
+  if (harness === "claude") {
+    if (useCache) {
+      const cached = readCache(harness, env);
+      if (cached) return { ok: true, models: cached.models, cached: true };
+    }
+    const snapshot = options.catalog ? { data: options.catalog, ageMs: 0 } : readSnapshotEntry(options);
+    const offline = options.offline ?? env.HERDR_LOADOUT_OFFLINE === "1";
+    if (!offline && (!snapshot || snapshot.ageMs > CATALOG_TTL_MS)) void fetchCatalog(options);
+
+    let result = null;
+    const fromModelsDev = snapshot ? claudeCatalogFromModelsDev({ ...options, catalog: snapshot.data }) : null;
+    if (fromModelsDev) result = { ok: true, models: fromModelsDev, derived: "models.dev" };
+    if (!result) {
+      const ompPath = options.executablePath ?? which("omp", { env });
+      const output = ompPath
+        ? await runAsync(ompPath, ["models", "--json"], { ...options, env, executablePath: ompPath, timeoutMs: options.timeoutMs ?? 20000 })
+        : null;
+      const fromOmp = output?.ok ? parseOmpAnthropic(output.stdout) : null;
+      if (fromOmp) result = { ok: true, models: fromOmp, derived: "omp" };
+    }
+    if (!result) return { ok: true, models: STATIC_CATALOGS.claude, static: true };
+    if (useCache) writeCache(harness, env, result.models);
+    return result;
+  }
+  const fixed = STATIC_CATALOGS[harness];
+  if (fixed) {
+    return { ok: true, models: fixed, static: true };
+  }
+  const catalog = CATALOGS[harness];
+  if (!catalog) {
+    return { ok: true, models: [], error: `no catalog for harness "${harness}"`, noCatalog: true };
+  }
+  if (useCache) {
+    const cached = readCache(harness, env);
+    if (cached) return { ok: true, models: cached.models, cached: true };
+  }
+  const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
+  const result = await runAsync(executablePath, catalog.args, { ...options, env, executablePath });
+  return catalogFromOutput(harness, catalog, result, useCache, env);
 }
 
 /** Effort levels for a harness, preferring the live catalog when it reports any. */
