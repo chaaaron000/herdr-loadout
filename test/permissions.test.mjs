@@ -51,6 +51,14 @@ test("Claude and OMP emit native permission flags while OpenCode uses env", () =
   assert.deepEqual(buildLaunchArgs({ harness: "opencode", permission_mode: "ask" }), []);
 });
 
+test("agy maps modes to --mode and skipping prompts to its own flag, replacing legacy mode", () => {
+  assert.deepEqual(buildLaunchArgs({ harness: "agy", permission_mode: "plan" }), ["--mode", "plan"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "agy", permission_mode: "dangerously-skip-permissions" }), ["--dangerously-skip-permissions"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "agy", mode: "plan", permission_mode: "accept-edits" }), ["--mode", "accept-edits"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "agy", mode: "plan", permission_mode: "" }), []);
+  assert.equal(permissionValue({ harness: "agy", mode: "plan" }, "permission_mode"), "plan");
+});
+
 test("new permission fields replace legacy mode, including explicit inheritance", () => {
   assert.deepEqual(buildLaunchArgs({ harness: "claude", mode: "plan" }), ["--permission-mode", "plan"]);
   assert.deepEqual(buildLaunchArgs({ harness: "claude", mode: "plan", permission_mode: "acceptEdits" }), ["--permission-mode", "acceptEdits"]);
@@ -96,7 +104,7 @@ test("dry-run exposes effective permissions and env, and rejects invalid merged 
 });
 
 test("TUI permission pickers offer only current harness values plus inherit", () => {
-  for (const harness of ["codex", "claude", "omp", "opencode", "pi", "custom"]) {
+  for (const harness of ["codex", "claude", "omp", "opencode", "agy", "pi", "custom"]) {
     for (const field of PERMISSION_FIELDS) {
       const fields = editableFields({ harness });
       const values = PERMISSION_OPTIONS[harness]?.[field];

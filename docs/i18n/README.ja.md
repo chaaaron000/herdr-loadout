@@ -332,7 +332,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 必須: `id`, `name`, `harness`, `model`, `effort`, `when_to_use`
 任意: `avoid_when`, `cost`(cheap|normal|expensive), `provider`, `mode`, `extra_args`, `env`, `tags`, `skills`, `notes`
 
-`harness` は `claude`, `codex`, `opencode`, `omp`, `pi`, `custom` のいずれかです。
+`harness` は `claude`, `codex`, `opencode`, `omp`, `pi`, `agy`（Antigravity CLI）, `custom` のいずれかです。
 `custom` 以外で一覧にない値は検証で拒否されます。
 
 ## harness ごとの引数マッピング
@@ -343,6 +343,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | `codex debug models` でカタログ取得 |
 | `opencode` | `-m` | `--variant` | `opencode models` で取得 |
 | `omp` | `--model=` | `--thinking=` | `omp models --json` で取得（thinking レベル含む） |
+| `agy` | `--model` | `--effort` | Antigravity CLI。`agy models` で取得。Herdr の `--kind agy` と同じ id |
 | `custom` | `--model` | `--effort` | 自由入力 |
 
 ## 検証方法

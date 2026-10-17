@@ -328,7 +328,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 必填：`id`, `name`, `harness`, `model`, `effort`, `when_to_use`
 可选：`avoid_when`, `cost`(cheap|normal|expensive), `provider`, `mode`, `extra_args`, `env`, `tags`, `skills`, `notes`
 
-`harness` 取 `claude`、`codex`、`opencode`、`omp`、`pi`、`custom` 之一。
+`harness` 取 `claude`、`codex`、`opencode`、`omp`、`pi`、`agy`（Antigravity CLI）、`custom` 之一。
 非 `custom` 且不在列表中的值会在校验时被拒绝。
 
 ## 各 harness 的参数映射
@@ -339,6 +339,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | 通过 `codex debug models` 获取目录 |
 | `opencode` | `-m` | `--variant` | 通过 `opencode models` 获取 |
 | `omp` | `--model=` | `--thinking=` | 通过 `omp models --json` 获取（含 thinking 级别） |
+| `agy` | `--model` | `--effort` | Antigravity CLI。通过 `agy models` 获取；与 Herdr 的 `--kind agy` 同名 |
 | `custom` | `--model` | `--effort` | 自由输入 |
 
 ## 验证方法

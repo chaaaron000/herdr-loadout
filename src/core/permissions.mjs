@@ -11,6 +11,7 @@ export const PERMISSION_OPTIONS = {
   },
   omp: { permission_mode: ["always-ask", "write", "yolo"] },
   opencode: { permission_mode: ["ask", "allow", "deny"] },
+  agy: { permission_mode: ["accept-edits", "plan", "dangerously-skip-permissions"] },
 };
 
 export function permissionOptions(harness, field) {
@@ -19,7 +20,7 @@ export function permissionOptions(harness, field) {
 
 export function permissionValue(profile, field) {
   if (Object.hasOwn(profile, field)) return profile[field];
-  if ((profile.harness === "claude" && field === "permission_mode") ||
+  if (((profile.harness === "claude" || profile.harness === "agy") && field === "permission_mode") ||
       (profile.harness === "codex" && field === "approval_policy")) return profile.mode;
   return undefined;
 }
@@ -53,6 +54,11 @@ export function permissionArgs(profile) {
     args.push("--permission-mode", profile.permission_mode);
   } else if (profile.harness === "omp" && profile.permission_mode) {
     args.push(`--approval-mode=${profile.permission_mode}`);
+  } else if (profile.harness === "agy" && profile.permission_mode) {
+    // agy takes its modes through `--mode`; skipping prompts is a separate flag
+    args.push(...(profile.permission_mode === "dangerously-skip-permissions"
+      ? ["--dangerously-skip-permissions"]
+      : ["--mode", profile.permission_mode]));
   }
   return args;
 }

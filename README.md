@@ -334,7 +334,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 설정한다. 하네스별 지원 값, 프로젝트 덮어쓰기, 실행 환경변수 전달 방법은
 [권한 설정 안내](./docs/permissions.md)를 참고한다.
 
-`harness` 는 `claude`, `codex`, `opencode`, `omp`, `pi`, `custom` 중 하나다.
+`harness` 는 `claude`, `codex`, `opencode`, `omp`, `pi`, `agy`(Antigravity CLI), `custom` 중 하나다.
 `custom` 이 아니면서 목록에 없는 값은 검증에서 거부된다.
 
 ## harness 별 인수 매핑
@@ -345,6 +345,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | `codex debug models` 로 카탈로그 조회 |
 | `opencode` | `-m` | `--variant` | `opencode models` 로 조회 |
 | `omp` | `--model=` | `--thinking=` | `omp models --json` 으로 조회(thinking 레벨 포함) |
+| `agy` | `--model` | `--effort` | Antigravity CLI. `agy models` 로 조회. Herdr `--kind agy` 와 같은 id |
 | `custom` | `--model` | `--effort` | 자유 입력 |
 
 ## 검증 방법

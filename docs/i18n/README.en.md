@@ -334,7 +334,7 @@ so their line endings are pinned to LF (`.gitattributes`).
 Required: `id`, `name`, `harness`, `model`, `effort`, `when_to_use`
 Optional: `avoid_when`, `cost` (cheap|normal|expensive), `provider`, `mode`, `extra_args`, `env`, `tags`, `skills`, `notes`
 
-`harness` is one of `claude`, `codex`, `opencode`, `omp`, `pi`, or `custom`.
+`harness` is one of `claude`, `codex`, `opencode`, `omp`, `pi`, `agy` (Antigravity CLI), or `custom`.
 Any other value is rejected by validation unless it is `custom`.
 
 ## Harness argument mapping
@@ -345,6 +345,7 @@ Any other value is rejected by validation unless it is `custom`.
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | Catalog from `codex debug models` |
 | `opencode` | `-m` | `--variant` | Catalog from `opencode models` |
 | `omp` | `--model=` | `--thinking=` | Catalog from `omp models --json` (includes thinking levels) |
+| `agy` | `--model` | `--effort` | Antigravity CLI. Catalog from `agy models`; same id as Herdr's `--kind agy` |
 | `custom` | `--model` | `--effort` | Free-form input |
 
 ## Verification

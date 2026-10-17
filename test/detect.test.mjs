@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { buildLaunchArgs, claudeCatalogFromOmp, detectHarnesses, dryRun, effortLevels, EFFORT_LEVELS, listModels, which, NO_CATALOG } from "../src/core/detect.mjs";
@@ -68,7 +69,7 @@ test("detectHarnesses reports every known harness with candidates", () => {
   assert.equal(byId.get("omp").detected, true);
   assert.equal(byId.get("pi").detected, false);
   assert.ok(byId.get("claude").candidates.length > 0);
-  assert.deepEqual([...byId.keys()].sort(), ["claude", "codex", "omp", "opencode", "pi"]);
+  assert.deepEqual([...byId.keys()].sort(), ["agy", "claude", "codex", "omp", "opencode", "pi"]);
 });
 
 test("effort levels fall back to the static table", () => {
@@ -99,6 +100,30 @@ test("listModels surfaces spawn failures without throwing", () => {
   assert.ok(result.error.length > 0);
 });
 
+test("agy's catalog skips its progress line and keeps id and label", () => {
+  const dir = tempDir();
+  try {
+    const win = process.platform === "win32";
+    const file = path.join(dir, win ? "agy.cmd" : "agy");
+    const lines = ["Fetching available models...", "gemini-x-high\tGemini X (High)", "claude-y\tClaude Y"];
+    fs.writeFileSync(
+      file,
+      win
+        ? `@echo off\r\n${lines.map((line) => `echo ${line}`).join("\r\n")}\r\n`
+        : `#!/bin/sh\nprintf '%s\\n' ${lines.map((line) => `'${line}'`).join(" ")}\n`,
+      { mode: 0o755 },
+    );
+    const result = listModels("agy", { cache: false, executablePath: file });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(result.models, [
+      { id: "gemini-x-high", label: "Gemini X (High)" },
+      { id: "claude-y", label: "Claude Y" },
+    ]);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("buildLaunchArgs maps each harness to its native flags", () => {
   assert.deepEqual(
     buildLaunchArgs({ harness: "claude", model: "m", effort: "high" }),
@@ -116,6 +141,10 @@ test("buildLaunchArgs maps each harness to its native flags", () => {
   assert.deepEqual(
     buildLaunchArgs({ harness: "omp", model: "m", effort: "high" }),
     ["--model=m", "--thinking=high"],
+  );
+  assert.deepEqual(
+    buildLaunchArgs({ harness: "agy", model: "m", effort: "high" }),
+    ["--model", "m", "--effort", "high"],
   );
 });
 

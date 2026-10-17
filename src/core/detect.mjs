@@ -27,6 +27,7 @@ export const HARNESS_EXECUTABLES = {
   opencode: ["opencode"],
   omp: ["omp"],
   pi: ["pi"],
+  agy: ["agy"],
 };
 
 const WINDOWS_EXTENSIONS = [".exe", ".cmd", ".bat", ".ps1", ""];
@@ -203,6 +204,7 @@ export const EFFORT_LEVELS = {
   opencode: ["minimal", "low", "medium", "high", "max"],
   omp: ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"],
   pi: [],
+  agy: ["low", "medium", "high", "max"],
   custom: [],
 };
 
@@ -367,6 +369,21 @@ const CATALOGS = {
         .filter((model) => model.id);
     },
   },
+  agy: {
+    // `agy models` prints a "Fetching available models..." line, then one
+    // `id<TAB>label` row per model
+    args: ["models"],
+    parse(stdout) {
+      return stdout
+        .split(/\r?\n/)
+        .filter((line) => line.includes("\t"))
+        .map((line) => {
+          const [id, label] = line.split("\t").map((part) => part.trim());
+          return { id, label: label || id };
+        })
+        .filter((model) => model.id);
+    },
+  },
 };
 
 /**
@@ -379,7 +396,7 @@ export const NO_CATALOG = ["pi"];
  * Harnesses whose launched form accepts an effort flag.
  * opencode's `--variant` belongs to `opencode run`, not the interactive TUI.
  */
-export const EFFORT_CAPABLE = ["claude", "codex", "omp"];
+export const EFFORT_CAPABLE = ["claude", "codex", "omp", "agy"];
 
 /**
  * List models for a harness. Never throws: failure yields an empty catalog and
@@ -536,13 +553,15 @@ export function buildLaunchArgs(profile) {
       if (effort) args.push(`--thinking=${effort}`);
       break;
     }
+    // agy uses the same `--model` / `--effort` pair as the generic form
+    case "agy":
     default: {
       if (profile.model) args.push("--model", profile.model);
       if (effort) args.push("--effort", effort);
     }
   }
   const replacesMode = (harness === "codex" && Object.hasOwn(profile, "approval_policy")) ||
-    (harness === "claude" && Object.hasOwn(profile, "permission_mode"));
+    ((harness === "claude" || harness === "agy") && Object.hasOwn(profile, "permission_mode"));
   if (profile.mode && !replacesMode) args.push(...modeArgs(harness, profile.mode));
   args.push(...permissionArgs(profile));
   if (Array.isArray(profile.extra_args)) args.push(...profile.extra_args);

@@ -26,7 +26,7 @@ Every profile needs all six. Writes fail without them.
 |---|---|
 | `id` | lowercase identifier, unique; `[a-z0-9][a-z0-9._-]*` |
 | `name` | display name |
-| `harness` | `claude`, `codex`, `opencode`, `omp`, `pi`, or `custom` |
+| `harness` | `claude`, `codex`, `opencode`, `omp`, `pi`, `agy` (Antigravity CLI), or `custom` |
 | `model` | model id the harness accepts |
 | `effort` | reasoning level |
 | `when_to_use` | the routing sentence a Director matches against |

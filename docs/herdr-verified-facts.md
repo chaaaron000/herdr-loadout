@@ -105,7 +105,7 @@ HERDR_WORKSPACE_ID / HERDR_TAB_ID / HERDR_PANE_ID
 
 ## 2. 하네스 실측 (이 머신)
 
-설치 여부: `claude.exe` ✓, `codex.exe` ✓, `opencode.exe` ✓, `omp.exe` ✓ / `pi`, `gemini`, `cursor-agent` ✗.
+설치 여부: `claude.exe` ✓, `codex.exe` ✓, `opencode.exe` ✓, `omp.exe` ✓, `agy.exe` ✓ / `pi`, `gemini`, `cursor-agent` ✗.
 Node v22.23.2, npm 10.9.8, Python 3.14.7. (`bun`, `cargo`, `go` 없음)
 
 | 하네스 | 모델 지정 | Effort 지정 | 모델 목록 조회 |
@@ -114,6 +114,7 @@ Node v22.23.2, npm 10.9.8, Python 3.14.7. (`bun`, `cargo`, `go` 없음)
 | codex | `-m/--model <m>` | `-c model_reasoning_effort=<lvl>` (**따옴표 없이**. `~/.codex/config.toml`에 동일 키 확인) | **`codex debug models`** → JSON (`models[].slug`, `display_name`, `default_reasoning_level`, `supported_reasoning_levels[].effort`) |
 | opencode | `-m/--model provider/model` | `--variant <v>` ("provider-specific reasoning effort, e.g. high, max, minimal") | **`opencode models [provider]`** → `provider/model` 라인 목록 (`--verbose`로 메타데이터) |
 | omp | `--model <m>` | `--thinking <off\|minimal\|low\|medium\|high\|xhigh\|max\|auto>` | **`omp models --json`** → `models[].{provider,id,selector,name,reasoning,thinking:[...]}` |
+| agy (Antigravity CLI 1.2.14) | `--model <m>` | `--effort <low\|medium\|high\|max>` (help 실측) | **`agy models`** → `Fetching available models...` 한 줄 뒤 `id<TAB>label` 라인 목록 |
 | pi / 기타 | 미설치 → 미검증 | 미검증 | 미검증 → 자유 입력 + extra_args |
 
 기타 실측 플래그:
@@ -121,6 +122,9 @@ Node v22.23.2, npm 10.9.8, Python 3.14.7. (`bun`, `cargo`, `go` 없음)
 - codex: `-s/--sandbox read-only|workspace-write|danger-full-access`, `-a/--ask-for-approval`, `--dangerously-bypass-approvals-and-sandbox`
 - omp: `--profile`, `--cwd`, `--mode text|json|rpc|rpc-ui`, `--no-tools`
 - opencode: `--agent <a>`
+- agy: `--mode accept-edits|plan`, `--dangerously-skip-permissions`, `--sandbox`(값 없는 스위치), `--add-dir`.
+  Herdr `agent start --kind agy` 지원. 처음 여는 폴더에서는 "Do you trust the contents of this project?"
+  확인 창이 떠서 `agent start` 가 `agent_not_ready`(blocked during startup)로 끝난다. 폴더를 한 번 신뢰하면 해소.
 
 ## 3. 라이브러리 실측
 

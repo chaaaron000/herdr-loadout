@@ -22,7 +22,7 @@ export const KNOWN_FIELDS = new Set([
 export const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 /** Harness ids accepted without an adapter. Anything else needs `custom`. */
-export const KNOWN_HARNESSES = ["claude", "codex", "opencode", "omp", "pi"];
+export const KNOWN_HARNESSES = ["claude", "codex", "opencode", "omp", "pi", "agy"];
 
 export function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
