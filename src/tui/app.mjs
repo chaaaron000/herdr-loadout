@@ -480,8 +480,7 @@ export default function App({ initialProject }) {
     if (!harness || requested.current.has(harness)) return;
     requested.current.add(harness);
     const signal = abort.current.signal;
-    listModelsAsync(harness, { signal }).then((catalog) => {
-      if (signal.aborted) return;
+    const show = (catalog) =>
       setCatalogs((prev) => ({
         ...prev,
         [harness]: {
@@ -490,6 +489,15 @@ export default function App({ initialProject }) {
           noCatalog: Boolean(catalog.noCatalog),
         },
       }));
+    listModelsAsync(harness, { signal }).then((catalog) => {
+      if (signal.aborted) return;
+      show(catalog);
+      // A cached list can predate a provider login or logout, so read the CLI
+      // once more behind it. A failed read keeps the cached rows.
+      if (!catalog.revalidate) return;
+      listModelsAsync(harness, { signal, refresh: true }).then((fresh) => {
+        if (!signal.aborted && fresh.ok) show(fresh);
+      });
     });
   };
 

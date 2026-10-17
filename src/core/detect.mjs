@@ -13,7 +13,11 @@ import { buildLaunchEnv, PERMISSION_FIELDS, permissionArgs, permissionValue, val
 
 import { CATALOG_TTL_MS, fetchCatalog, loadCatalog, modelsForProvider, readSnapshot, readSnapshotEntry } from "./modelsdev.mjs";
 
-/** A harness's model list changes rarely; `detect --refresh` forces a new read. */
+/**
+ * A harness's model list changes rarely, but it does follow the account: a
+ * provider that is logged out drops off it. `detect --refresh` forces a new
+ * read, and the profile UI re-reads a cached list in the background.
+ */
 export const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** Harness executables to look for, in probe order. */
@@ -96,6 +100,15 @@ function readCache(id, env) {
     /* cache miss is normal */
   }
   return null;
+}
+
+/**
+ * How a lookup uses the cache. `cache: false` neither reads nor writes it;
+ * `refresh: true` skips the read but still stores the fresh answer.
+ */
+function cacheMode(options) {
+  const write = options.cache !== false;
+  return { read: write && options.refresh !== true, write };
 }
 
 function writeCache(id, env, models) {
@@ -371,11 +384,15 @@ export const EFFORT_CAPABLE = ["claude", "codex", "omp"];
 /**
  * List models for a harness. Never throws: failure yields an empty catalog and
  * a reason, so the caller can fall back to free-form input.
- * @returns {{ok: boolean, models: object[], error?: string, cached?: boolean}}
+ *
+ * A cached answer that came from a harness CLI carries `revalidate: true`: that
+ * list follows the account's logins, so it can be out of date well inside the
+ * TTL. Ask again with `refresh: true` to replace it.
+ * @returns {{ok: boolean, models: object[], error?: string, cached?: boolean, revalidate?: boolean}}
  */
 export function listModels(harness, options = {}) {
   const env = options.env ?? process.env;
-  const useCache = options.cache !== false;
+  const cache = cacheMode(options);
   // claude has no listing command. Prefer the models.dev snapshot (the same
   // source omp reads), then omp itself, then the curated aliases.
   if (harness === "claude") {
@@ -396,13 +413,13 @@ export function listModels(harness, options = {}) {
   if (!catalog) {
     return { ok: true, models: [], error: `no catalog for harness "${harness}"`, noCatalog: true };
   }
-  if (useCache) {
+  if (cache.read) {
     const cached = readCache(harness, env);
-    if (cached) return { ok: true, models: cached.models, cached: true };
+    if (cached) return { ok: true, models: cached.models, cached: true, revalidate: true };
   }
   const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
   const result = run(executablePath, catalog.args, { ...options, env, executablePath });
-  return catalogFromOutput(harness, catalog, result, useCache, env);
+  return catalogFromOutput(harness, catalog, result, cache.write, env);
 }
 
 function catalogFromOutput(harness, catalog, result, useCache, env) {
@@ -425,13 +442,13 @@ function catalogFromOutput(harness, catalog, result, useCache, env) {
  * rows are cached like any other harness, and an expired models.dev snapshot is
  * still served while a fresh one is fetched in the background for next time.
  * `options.offline` (or HERDR_LOADOUT_OFFLINE=1) suppresses that fetch.
- * @returns {Promise<{ok: boolean, models: object[], error?: string, cached?: boolean}>}
+ * @returns {Promise<{ok: boolean, models: object[], error?: string, cached?: boolean, revalidate?: boolean}>}
  */
 export async function listModelsAsync(harness, options = {}) {
   const env = options.env ?? process.env;
-  const useCache = options.cache !== false;
+  const cache = cacheMode(options);
   if (harness === "claude") {
-    if (useCache) {
+    if (cache.read) {
       const cached = readCache(harness, env);
       if (cached) return { ok: true, models: cached.models, cached: true };
     }
@@ -451,7 +468,7 @@ export async function listModelsAsync(harness, options = {}) {
       if (fromOmp) result = { ok: true, models: fromOmp, derived: "omp" };
     }
     if (!result) return { ok: true, models: STATIC_CATALOGS.claude, static: true };
-    if (useCache) writeCache(harness, env, result.models);
+    if (cache.write) writeCache(harness, env, result.models);
     return result;
   }
   const fixed = STATIC_CATALOGS[harness];
@@ -462,13 +479,13 @@ export async function listModelsAsync(harness, options = {}) {
   if (!catalog) {
     return { ok: true, models: [], error: `no catalog for harness "${harness}"`, noCatalog: true };
   }
-  if (useCache) {
+  if (cache.read) {
     const cached = readCache(harness, env);
-    if (cached) return { ok: true, models: cached.models, cached: true };
+    if (cached) return { ok: true, models: cached.models, cached: true, revalidate: true };
   }
   const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
   const result = await runAsync(executablePath, catalog.args, { ...options, env, executablePath });
-  return catalogFromOutput(harness, catalog, result, useCache, env);
+  return catalogFromOutput(harness, catalog, result, cache.write, env);
 }
 
 /** Effort levels for a harness, preferring the live catalog when it reports any. */

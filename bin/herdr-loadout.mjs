@@ -81,7 +81,7 @@ Options:
   --json      machine-readable output
   --all       include a marker for suppressed/duplicate entries
   --project   use this project root for overrides
-  --refresh   bypass the model catalog cache
+  --refresh   re-read the model catalog and replace the cache
   --from      read a profile from a JSON/TOML file, or - for stdin
   --force     allow overwriting an existing profile id
   --sandbox   Codex: read-only | workspace-write | danger-full-access
@@ -203,7 +203,7 @@ function cmdDetect(options) {
   const harnesses = detectHarnesses();
   const details = harnesses.map((entry) => {
     if (!entry.detected) return { ...entry, models: [], effort: effortLevels(entry.id) };
-    const catalog = listModels(entry.id, { cache: !options.refresh });
+    const catalog = listModels(entry.id, { refresh: options.refresh });
     return {
       ...entry,
       models: catalog.models,
@@ -279,7 +279,7 @@ function cmdLaunch(id, options) {
   const { byId } = loadMerged(options);
   const profile = byId.get(id);
   if (!profile) fail(`profile "${id}" not found`);
-  const result = dryRun(profile, { cache: !options.refresh });
+  const result = dryRun(profile, { refresh: options.refresh });
   if (options.json) return printJson(result);
   const lines = result.checks.map((check) => `${check.ok ? "✓" : "✗"} ${check.label}: ${check.detail}`);
   process.stdout.write(`${lines.join("\n")}\n`);

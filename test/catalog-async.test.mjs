@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { cleanup, tempDir } from "./helpers.mjs";
+import { cleanup, fakeCli, tempDir } from "./helpers.mjs";
 import { CACHE_TTL_MS, listModelsAsync } from "../src/core/detect.mjs";
 import { CATALOG_TTL_MS } from "../src/core/modelsdev.mjs";
 
@@ -40,6 +40,7 @@ test("an expired snapshot still answers for claude, and the rows are cached", as
     fs.rmSync(path.join(dir, "models-dev.json"));
     const second = await listModelsAsync("claude", { env, offline: true });
     assert.equal(second.cached, true);
+    assert.equal(second.revalidate, undefined, "derived rows do not follow a login");
     assert.deepEqual(second.models.map((model) => model.id), first.models.map((model) => model.id));
   });
 });
@@ -94,6 +95,51 @@ test("a cached catalog is served without spawning, an expired one is not", async
     const miss = await listModelsAsync("omp", { env, executablePath: missing, timeoutMs: 2000 });
     assert.equal(miss.ok, false, "a spawn failure resolves instead of rejecting");
     assert.ok(miss.error.length > 0);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("refresh re-reads a cached catalog and replaces it", async () => {
+  const dir = tempDir();
+  try {
+    // The cache was written while a provider was logged out; the CLI has it back.
+    const env = { HERDR_PLUGIN_STATE_DIR: dir, PATH: "", ComSpec: process.env.ComSpec };
+    const cacheFile = path.join(dir, "models", "omp.json");
+    const executablePath = fakeCli(path.join(dir, "bin"), "omp", '{"models":[{"selector":"ollama/x"},{"selector":"anthropic/claude-opus-5"}]}');
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), models: [{ id: "ollama/x" }] }));
+
+    const hit = await listModelsAsync("omp", { env, executablePath });
+    assert.equal(hit.revalidate, true, "a cached CLI list asks to be re-read");
+    assert.deepEqual(hit.models.map((model) => model.id), ["ollama/x"]);
+
+    const fresh = await listModelsAsync("omp", { env, executablePath, refresh: true });
+    assert.equal(fresh.ok, true);
+    assert.equal(fresh.cached, undefined);
+    assert.deepEqual(fresh.models.map((model) => model.id), ["ollama/x", "anthropic/claude-opus-5"]);
+
+    const next = await listModelsAsync("omp", { env, executablePath });
+    assert.equal(next.cached, true);
+    assert.equal(next.models.length, 2, "the refreshed list is what the cache now holds");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("a failed refresh leaves the cache alone", async () => {
+  const dir = tempDir();
+  try {
+    const env = { HERDR_PLUGIN_STATE_DIR: dir, PATH: "" };
+    const cacheFile = path.join(dir, "models", "omp.json");
+    const missing = path.join("Z:", "missing", "omp.exe");
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), models: [{ id: "cached/model" }] }));
+
+    const failed = await listModelsAsync("omp", { env, executablePath: missing, refresh: true, timeoutMs: 2000 });
+    assert.equal(failed.ok, false);
+    const hit = await listModelsAsync("omp", { env, executablePath: missing });
+    assert.deepEqual(hit.models.map((model) => model.id), ["cached/model"]);
   } finally {
     cleanup(dir);
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { cleanup, tempDir } from "./helpers.mjs";
+import { cleanup, fakeCli, tempDir } from "./helpers.mjs";
 import { CACHE_TTL_MS, dryRun, listModels } from "../src/core/detect.mjs";
 
 function withStateDir(dir, fn) {
@@ -53,6 +53,26 @@ test("an expired cache is ignored", () => {
       });
       assert.equal(result.cached, undefined);
       assert.equal(result.ok, false, "stale cache must not satisfy the request");
+    });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("refresh replaces a cache that is still inside its TTL", () => {
+  const dir = tempDir();
+  try {
+    withStateDir(dir, () => {
+      const cacheFile = path.join(dir, "models", "omp.json");
+      const executablePath = fakeCli(path.join(dir, "bin"), "omp", '{"models":[{"selector":"anthropic/claude-opus-5"}]}');
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), models: [{ id: "cached/model" }] }));
+
+      const fresh = listModels("omp", { executablePath, refresh: true });
+      assert.deepEqual(fresh.models.map((model) => model.id), ["anthropic/claude-opus-5"]);
+      const next = listModels("omp", { executablePath: path.join("Z:", "missing", "omp.exe") });
+      assert.equal(next.cached, true);
+      assert.deepEqual(next.models.map((model) => model.id), ["anthropic/claude-opus-5"]);
     });
   } finally {
     cleanup(dir);

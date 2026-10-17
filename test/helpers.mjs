@@ -13,6 +13,18 @@ export function cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/**
+ * A stand-in harness CLI that prints `stdout` whatever its arguments. Keep
+ * `stdout` to one line with no shell metacharacters. Returns its path.
+ */
+export function fakeCli(dir, name, stdout) {
+  const win = process.platform === "win32";
+  const file = path.join(dir, win ? `${name}.cmd` : name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, win ? `@echo ${stdout}\r\n` : `#!/bin/sh\necho '${stdout}'\n`, { mode: 0o755 });
+  return file;
+}
+
 /** Minimal in-memory fs implementing the subset the core modules use. */
 export function memoryFs(initial = {}) {
   const files = new Map(Object.entries(initial));
