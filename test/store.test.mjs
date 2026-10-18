@@ -159,6 +159,30 @@ test("upsert rejects invalid profiles without touching the file", () => {
   }
 });
 
+test("an empty required field is refused on write and reported on read", () => {
+  // The merge hides a project-only profile with an empty required field, so
+  // letting one be saved made it vanish from the list without a word.
+  const dir = tempDir();
+  try {
+    const file = path.join(dir, "loadout.toml");
+    const body = { id: "scenario", name: "Scenario", harness: "agy", model: "m", effort: "medium" };
+    for (const when_to_use of ["", "   "]) {
+      const result = upsertProfile(file, { ...body, when_to_use });
+      assert.equal(result.ok, false);
+      assert.match(result.errors.join(" "), /when_to_use/);
+    }
+    assert.equal(upsertProfile(file, { id: "scenario", model: "" }, { partial: true }).ok, false);
+
+    fs.writeFileSync(file, 'version = 1\n[[profiles]]\nid = "scenario"\nname = "Scenario"\nharness = "agy"\nmodel = "m"\neffort = "medium"\nwhen_to_use = ""\n');
+    const loaded = readConfigFile(file);
+    assert.deepEqual(loaded.profiles, []);
+    assert.equal(loaded.invalid[0].id, "scenario");
+    assert.match(loaded.invalid[0].errors.join(" "), /when_to_use/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("upsert drops unknown profile fields instead of writing them", () => {
   const dir = tempDir();
   try {

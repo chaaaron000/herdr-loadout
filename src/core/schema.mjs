@@ -40,7 +40,16 @@ export function validateProfile(profile, options = {}) {
   if (!isPlainObject(profile)) return { errors: ["profile is not a table"] };
 
   for (const field of REQUIRED_FIELDS) {
-    if (requireAll && !(field in profile)) errors.push(`missing required field: ${field}`);
+    if (!(field in profile)) {
+      if (requireAll) errors.push(`missing required field: ${field}`);
+      continue;
+    }
+    // The merge treats an empty required field as missing and hides the
+    // profile, so it must never get as far as the file.
+    const value = profile[field];
+    if (field !== "id" && typeof value === "string" && value.trim() === "") {
+      errors.push(`${field} must not be empty`);
+    }
   }
   if ("id" in profile) {
     if (typeof profile.id !== "string" || profile.id.length === 0) {
