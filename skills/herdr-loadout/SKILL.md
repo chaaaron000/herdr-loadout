@@ -76,22 +76,60 @@ skill rather than inventing a profile.
    `args` includes the profile's permission flags. `env` includes its environment overrides
    and, for OpenCode, generated runtime permissions.
 
-4. **Start the worker** with the Herdr skill's rules for panes and naming:
+4. **Open the worker pane** in the *worker column*: your pane keeps the left half and workers
+   stack on the right.
 
    ```bash
+   # first worker: split your own pane to the right
    herdr pane split --current --direction right --cwd "$PWD" --no-focus
-   herdr agent start <worker-name> --kind <harness> --pane <pane_id> -- <args...>
-   herdr agent prompt <worker-name> "<task>" --wait --timeout 600000
-   herdr agent read <worker-name> --source recent-unwrapped --lines 120
+   # each further worker: split the tallest worker pane down
+   herdr pane split <tallest_worker_pane> --direction down --cwd "$PWD" --no-focus
    ```
 
-   Pass the profile's `args` verbatim after `--`. Do not add or rewrite harness flags.
+   Splitting the tallest worker keeps the column even; splitting the newest one halves it every
+   time. Find heights with `herdr pane layout --pane <your_pane_id>` (`rect.height`); without
+   `--pane` it reads the user's focused tab, which may be another one. Keep every worker at least
+   12 rows tall: when the column has no room for another, finish and close a worker first.
    For every entry in `env`, add one `--env KEY=VALUE` argument to `herdr pane split`.
    Pass each pair as one shell-quoted argument; OpenCode's inline JSON must remain intact.
 
-5. **Report the outcome** with the worker name, the profile that ran it, and the result.
+5. **Start the worker** with the Herdr skill's naming rules:
 
-A delegated task is done when the worker's answer is read back to the caller — not when the prompt is submitted.
+   ```bash
+   herdr agent start <worker-name> --kind <harness> --pane <pane_id> -- <args...>
+   ```
+
+   Pass the profile's `args` verbatim after `--`. Do not add or rewrite harness flags.
+
+6. **Prompt with the worker tag.** Every prompt to a worker, follow-ups included, starts with
+   `[Worker-<worker-name>]`, so the worker and the user can both see which worker a prompt is for:
+
+   ```bash
+   herdr agent prompt <worker-name> "[Worker-<worker-name>] <task>" --wait --timeout 1800000
+   ```
+
+   When your harness can run a shell command as a background job (Claude Code's
+   `run_in_background`, omp's `async`), run this exact command as one, one job per worker, and
+   go back to the user while it runs. The user can then give you new instructions mid-task, and
+   the job finishing is your signal to read the worker. Run it in the foreground only on a
+   harness without background jobs.
+
+7. **Read the answer, then close the worker.**
+
+   ```bash
+   herdr agent read <worker-name> --source recent-unwrapped --lines 120
+   herdr pane close <pane_id>
+   ```
+
+   Close the pane as soon as its answer is read, unless you already plan a follow-up prompt for
+   that worker (a review-and-fix loop, for example). Closing hands the space to the neighbouring
+   pane, and closing the last worker gives your pane its full width back, so the layout needs no
+   resizing.
+
+8. **Report the outcome** with the worker name, the profile that ran it, and the result.
+
+A delegated task is done when the worker's answer is read back to the caller and every worker with
+no further work is closed — not when the prompt is submitted.
 
 ## Routing rules
 
