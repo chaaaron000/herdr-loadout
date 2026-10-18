@@ -101,7 +101,7 @@ skill rather than inventing a profile.
 
    Pass the profile's `args` verbatim after `--`. Do not add or rewrite harness flags.
 
-6. **Prompt with the worker tag.** Every prompt to a worker, follow-ups included, starts with
+6. **Prompt with the worker tag.** Every task prompt to a worker, follow-ups included, starts with
    `[Worker-<worker-name>]`, so the worker and the user can both see which worker a prompt is for:
 
    ```bash
@@ -114,22 +114,26 @@ skill rather than inventing a profile.
    the job finishing is your signal to read the worker. Run it in the foreground only on a
    harness without background jobs.
 
-7. **Read the answer, then close the worker.**
+7. **Read the answer, then close or compact the worker.**
 
    ```bash
    herdr agent read <worker-name> --source recent-unwrapped --lines 120
-   herdr pane close <pane_id>
    ```
 
-   Close the pane as soon as its answer is read, unless you already plan a follow-up prompt for
-   that worker (a review-and-fix loop, for example). Closing hands the space to the neighbouring
-   pane, and closing the last worker gives your pane its full width back, so the layout needs no
-   resizing.
+   - **No follow-up planned:** close it now with `herdr pane close <pane_id>`. Closing hands the
+     space to the neighbouring pane, and closing the last worker gives your pane its full width
+     back, so the layout needs no resizing.
+   - **Follow-up planned** (a review-and-fix loop, for example): compact its context now with
+     whatever compaction the harness offers (usually a slash command such as `/compact`), so the
+     next task starts small. Send it bare, without the worker tag or `--wait`: a slash command
+     must start the line, and Herdr can report the worker `idle` while it compacts. Before the
+     next task prompt, `herdr agent read` the worker and send only once the compaction has
+     finished.
 
 8. **Report the outcome** with the worker name, the profile that ran it, and the result.
 
-A delegated task is done when the worker's answer is read back to the caller and every worker with
-no further work is closed — not when the prompt is submitted.
+A delegated task is done when the worker's answer is read back to the caller and every worker is
+either closed or compacted for its planned follow-up — not when the prompt is submitted.
 
 ## Routing rules
 
