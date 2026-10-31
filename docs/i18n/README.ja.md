@@ -343,7 +343,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | `codex debug models` でカタログ取得 |
 | `opencode` | `-m` | `--variant` | `opencode models` で取得 |
 | `omp` | `--model=` | `--thinking=` | `omp models --json` で取得（thinking レベル含む） |
-| `agy` | `--model` | `--effort` | Antigravity CLI。`agy models` で取得。Herdr の `--kind agy` と同じ id |
+| `agy` | `--model` | `--effort` | Antigravity CLI。`agy models` で取得。Herdr の `--kind agy` と同じ id。`gemini-3.8-flash-medium` のように id が `-low`・`-medium`・`-high` などで終わる場合、effort はその値になり `--effort` は付かない（TUI では Effort 項目を隠す） |
 | `custom` | `--model` | `--effort` | 自由入力 |
 
 ## 検証方法

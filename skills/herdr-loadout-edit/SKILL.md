@@ -28,7 +28,7 @@ Every profile needs all six. Writes fail without them.
 | `name` | display name |
 | `harness` | `claude`, `codex`, `opencode`, `omp`, `pi`, `agy` (Antigravity CLI), or `custom` |
 | `model` | model id the harness accepts |
-| `effort` | reasoning level |
+| `effort` | reasoning level; for an agy model id ending in a level (`gemini-3.8-flash-medium`) it is set from the id |
 | `when_to_use` | the routing sentence a Director matches against |
 
 Optional: `avoid_when`, `cost` (`cheap`/`normal`/`expensive`), `provider`, `mode`,

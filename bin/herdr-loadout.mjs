@@ -18,7 +18,7 @@ import {
   sourceRoot,
   stateDir,
 } from "../src/core/paths.mjs";
-import { detectHarnesses, dryRun, effortLevels, listModels } from "../src/core/detect.mjs";
+import { detectHarnesses, dryRun, effortLevels, listModels, withModelEffort } from "../src/core/detect.mjs";
 import {
   ensureGlobalConfig,
   loadConfig,
@@ -355,7 +355,8 @@ function cmdAdd(options) {
   const input = collectInput(options);
   if (!input.ok) fail(input.errors.join("\n"));
 
-  const profile = input.profile;
+  // An agy id like `gemini-3.8-flash-medium` supplies the effort itself.
+  const profile = withModelEffort(input.profile);
   if (!profile.id && profile.name) {
     profile.id = String(profile.name)
       .trim()
@@ -433,7 +434,7 @@ function cmdSet(id, options) {
     if (!globalProfile) {
       fail(`profile "${id}" exists only in the project; use --project to change it`);
     }
-    const next = { ...globalProfile, ...input.profile, id };
+    const next = withModelEffort({ ...globalProfile, ...input.profile, id });
     const permissionErrors = validatePermissions(next);
     if (permissionErrors.length) fail(permissionErrors.join("\n"));
     const result = upsertProfile(target.path, next);
@@ -448,7 +449,7 @@ function cmdSet(id, options) {
 
   // Strip the merge bookkeeping so it never lands in the file.
   const { origin, overrides, differs, ...base } = merged;
-  const next = { ...base, ...input.profile, id };
+  const next = withModelEffort({ ...base, ...input.profile, id });
   const permissionErrors = validatePermissions(next);
   if (permissionErrors.length) fail(permissionErrors.join("\n"));
 

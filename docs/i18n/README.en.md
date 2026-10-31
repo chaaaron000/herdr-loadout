@@ -345,7 +345,7 @@ Any other value is rejected by validation unless it is `custom`.
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | Catalog from `codex debug models` |
 | `opencode` | `-m` | `--variant` | Catalog from `opencode models` |
 | `omp` | `--model=` | `--thinking=` | Catalog from `omp models --json` (includes thinking levels) |
-| `agy` | `--model` | `--effort` | Antigravity CLI. Catalog from `agy models`; same id as Herdr's `--kind agy` |
+| `agy` | `--model` | `--effort` | Antigravity CLI. Catalog from `agy models`; same id as Herdr's `--kind agy`. When the id ends in a level (`-low`, `-medium`, `-high`, …, e.g. `gemini-3.8-flash-medium`), the effort is that level and no `--effort` is passed (the TUI hides the Effort field) |
 | `custom` | `--model` | `--effort` | Free-form input |
 
 ## Verification

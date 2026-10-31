@@ -204,7 +204,7 @@ export const EFFORT_LEVELS = {
   opencode: ["minimal", "low", "medium", "high", "max"],
   omp: ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"],
   pi: [],
-  agy: ["low", "medium", "high", "max"],
+  agy: ["low", "medium", "high", "xhigh", "max"],
   custom: [],
 };
 
@@ -399,6 +399,25 @@ export const NO_CATALOG = ["pi"];
 export const EFFORT_CAPABLE = ["claude", "codex", "omp", "agy"];
 
 /**
+ * The effort a model id already fixes, or null.
+ *
+ * agy lists one id per reasoning level of the same model
+ * (`gemini-3.8-flash-low`, `-medium`, `-high`). For those ids the level is part
+ * of the model, so the profile's effort follows the id and no `--effort` flag
+ * is passed.
+ */
+export function modelEffort(harness, model) {
+  if (harness !== "agy" || typeof model !== "string") return null;
+  return /-(minimal|low|medium|high|xhigh|max)$/.exec(model)?.[1] ?? null;
+}
+
+/** The profile with its effort taken from the model id when the id fixes one. */
+export function withModelEffort(profile) {
+  const fixed = modelEffort(profile?.harness, profile?.model);
+  return fixed && profile.effort !== fixed ? { ...profile, effort: fixed } : profile;
+}
+
+/**
  * List models for a harness. Never throws: failure yields an empty catalog and
  * a reason, so the caller can fall back to free-form input.
  *
@@ -553,8 +572,12 @@ export function buildLaunchArgs(profile) {
       if (effort) args.push(`--thinking=${effort}`);
       break;
     }
-    // agy uses the same `--model` / `--effort` pair as the generic form
-    case "agy":
+    case "agy": {
+      if (profile.model) args.push("--model", profile.model);
+      // an id like `gemini-3.8-flash-medium` already carries its level
+      if (effort && !modelEffort(harness, profile.model)) args.push("--effort", effort);
+      break;
+    }
     default: {
       if (profile.model) args.push("--model", profile.model);
       if (effort) args.push("--effort", effort);
@@ -642,7 +665,16 @@ export function dryRun(profile, options = {}) {
     }
   }
 
-  if (profile.effort && harness !== "custom") {
+  const fixedEffort = modelEffort(harness, profile.model);
+  if (fixedEffort) {
+    checks.push({
+      label: `effort "${profile.effort ?? ""}"`,
+      ok: profile.effort === fixedEffort,
+      detail: profile.effort === fixedEffort
+        ? "set by the model id; no --effort flag"
+        : `the model id fixes effort to "${fixedEffort}"`,
+    });
+  } else if (profile.effort && harness !== "custom") {
     const known = effortLevels(harness, { models: catalog?.models });
     const ok = known.length === 0 || known.includes(profile.effort);
     const carried = EFFORT_CAPABLE.includes(harness);

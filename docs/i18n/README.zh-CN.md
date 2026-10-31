@@ -339,7 +339,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | 通过 `codex debug models` 获取目录 |
 | `opencode` | `-m` | `--variant` | 通过 `opencode models` 获取 |
 | `omp` | `--model=` | `--thinking=` | 通过 `omp models --json` 获取（含 thinking 级别） |
-| `agy` | `--model` | `--effort` | Antigravity CLI。通过 `agy models` 获取；与 Herdr 的 `--kind agy` 同名 |
+| `agy` | `--model` | `--effort` | Antigravity CLI。通过 `agy models` 获取；与 Herdr 的 `--kind agy` 同名。若 id 以 `-low`、`-medium`、`-high` 等结尾（如 `gemini-3.8-flash-medium`），effort 即为该级别，不再传 `--effort`（TUI 隐藏 Effort 项） |
 | `custom` | `--model` | `--effort` | 自由输入 |
 
 ## 验证方法

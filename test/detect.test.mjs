@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { buildLaunchArgs, claudeCatalogFromOmp, detectHarnesses, dryRun, effortLevels, EFFORT_LEVELS, listModels, which, NO_CATALOG } from "../src/core/detect.mjs";
+import { applyFieldValue, editableFields } from "../src/tui/app.mjs";
 import { cleanup, memoryFs, tempDir } from "./helpers.mjs";
 
 /** Run `fn` with an isolated state dir so no cached or machine catalog leaks in. */
@@ -146,6 +147,33 @@ test("buildLaunchArgs maps each harness to its native flags", () => {
     buildLaunchArgs({ harness: "agy", model: "m", effort: "high" }),
     ["--model", "m", "--effort", "high"],
   );
+});
+
+test("an agy model id that carries its level replaces the effort flag", () => {
+  assert.deepEqual(
+    buildLaunchArgs({ harness: "agy", model: "gemini-3.8-flash-medium", effort: "high" }),
+    ["--model", "gemini-3.8-flash-medium"],
+  );
+  // ids without a level suffix keep the flag; other harnesses are untouched
+  assert.deepEqual(
+    buildLaunchArgs({ harness: "agy", model: "claude-opus-4-6-thinking", effort: "max" }),
+    ["--model", "claude-opus-4-6-thinking", "--effort", "max"],
+  );
+  assert.deepEqual(
+    buildLaunchArgs({ harness: "codex", model: "x-high", effort: "low" }),
+    ["-m", "x-high", "-c", "model_reasoning_effort=low"],
+  );
+});
+
+test("the editor hides effort and follows the agy model id", () => {
+  const draft = { id: "s", name: "S", harness: "agy", model: "claude-sonnet-4-6", effort: "max", when_to_use: "x" };
+  assert.ok(editableFields(draft).includes("effort"));
+  const picked = applyFieldValue(draft, "model", "gemini-3.8-flash-low");
+  assert.equal(picked.effort, "low");
+  assert.ok(!editableFields(picked).includes("effort"));
+  // a missing executable keeps the catalog lookup off the real agy CLI
+  const mismatch = dryRun({ ...draft, model: "gemini-3.8-flash-low", effort: "high" }, { cache: false, executablePath: "no-such-agy" });
+  assert.equal(mismatch.checks.find((check) => check.label.startsWith("effort")).ok, false);
 });
 
 test("buildLaunchArgs appends mode and extra args last", () => {

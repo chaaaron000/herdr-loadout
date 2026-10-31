@@ -114,7 +114,7 @@ Node v22.23.2, npm 10.9.8, Python 3.14.7. (`bun`, `cargo`, `go` 없음)
 | codex | `-m/--model <m>` | `-c model_reasoning_effort=<lvl>` (**따옴표 없이**. `~/.codex/config.toml`에 동일 키 확인) | **`codex debug models`** → JSON (`models[].slug`, `display_name`, `default_reasoning_level`, `supported_reasoning_levels[].effort`) |
 | opencode | `-m/--model provider/model` | `--variant <v>` ("provider-specific reasoning effort, e.g. high, max, minimal") | **`opencode models [provider]`** → `provider/model` 라인 목록 (`--verbose`로 메타데이터) |
 | omp | `--model <m>` | `--thinking <off\|minimal\|low\|medium\|high\|xhigh\|max\|auto>` | **`omp models --json`** → `models[].{provider,id,selector,name,reasoning,thinking:[...]}` |
-| agy (Antigravity CLI 1.2.14) | `--model <m>` | `--effort <low\|medium\|high\|max>` (help 실측) | **`agy models`** → `Fetching available models...` 한 줄 뒤 `id<TAB>label` 라인 목록 |
+| agy (Antigravity CLI) | `--model <m>` | `--effort <low\|medium\|high\|xhigh\|max>` (help 실측. 1.2.14 에는 `xhigh` 없음) | **`agy models`** → `Fetching available models...` 한 줄 뒤 `id<TAB>label` 라인 목록. 같은 모델을 수준별 id 로 나눠 낸다(`gemini-3.8-flash-low`/`-medium`/`-high`, `gpt-oss-120b-medium`) |
 | pi / 기타 | 미설치 → 미검증 | 미검증 | 미검증 → 자유 입력 + extra_args |
 
 기타 실측 플래그:

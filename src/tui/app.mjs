@@ -10,7 +10,7 @@ import { deleteProfile, ensureGlobalConfig, loadConfig, upsertProfile } from "..
 import { diffFields, mergeProfiles, overrideDelta, patchProfile, sameValue } from "../core/merge.mjs";
 import { COSTS, KNOWN_HARNESSES } from "../core/schema.mjs";
 import { findProjectConfig, globalConfigPath, projectConfigPath } from "../core/paths.mjs";
-import { detectHarnesses, dryRun, effortLevels, listModelsAsync } from "../core/detect.mjs";
+import { detectHarnesses, dryRun, effortLevels, listModelsAsync, modelEffort, withModelEffort } from "../core/detect.mjs";
 import { visibleWindow } from "../core/window.mjs";
 import { layoutFor, listWindow as listWindowFor } from "../core/layout.mjs";
 import { pickerView, nextSort, SORT_LABELS } from "../core/picker.mjs";
@@ -175,8 +175,12 @@ function DetectView({ detection, catalogs, layout }) {
 
 export const EDITABLE = ["name", "harness", "model", "effort", "sandbox", "approval_policy", "permission_mode", "cost", "when_to_use", "avoid_when", "extra_args", "tags"];
 
+/** Fields the editor shows; effort is hidden when the model id already fixes it. */
 export function editableFields(draft) {
-  return EDITABLE.filter((field) => !PERMISSION_FIELDS.includes(field) || permissionOptions(draft?.harness, field).length > 0);
+  return EDITABLE.filter((field) => {
+    if (field === "effort") return !modelEffort(draft?.harness, draft?.model);
+    return !PERMISSION_FIELDS.includes(field) || permissionOptions(draft?.harness, field).length > 0;
+  });
 }
 
 /** Value of an editable field as the editor shows it (permissions can be inherited). */
@@ -828,7 +832,7 @@ export default function App({ initialProject }) {
           const next = { ...prev };
           if (draftGlobal[field] === undefined) delete next[field];
           else next[field] = structuredClone(draftGlobal[field]);
-          return next;
+          return withModelEffort(next);
         });
         setFieldState((prev) => ({ ...prev, statusOk: true, status: `${labelOf(field)} back to the global value` }));
         return;
@@ -1152,7 +1156,10 @@ function parseFieldValue(field, raw) {
   return raw;
 }
 
-/** Changing harness must not carry a permission policy into a different adapter. */
+/**
+ * Changing harness must not carry a permission policy into a different adapter,
+ * and a model id that fixes the effort sets it.
+ */
 export function applyFieldValue(draft, field, raw) {
   const value = PERMISSION_FIELDS.includes(field) && raw === "inherit" ? "" : parseFieldValue(field, raw);
   const next = { ...draft, [field]: value };
@@ -1162,7 +1169,7 @@ export function applyFieldValue(draft, field, raw) {
     }
     if ((draft.harness === "claude" || draft.harness === "codex") && draft.mode) next.mode = "";
   }
-  return next;
+  return withModelEffort(next);
 }
 
 /** Split a list input, honouring single and double quotes. */

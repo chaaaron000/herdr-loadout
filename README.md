@@ -345,7 +345,7 @@ herdr plugin action invoke herdr-loadout.add-profile
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | `codex debug models` 로 카탈로그 조회 |
 | `opencode` | `-m` | `--variant` | `opencode models` 로 조회 |
 | `omp` | `--model=` | `--thinking=` | `omp models --json` 으로 조회(thinking 레벨 포함) |
-| `agy` | `--model` | `--effort` | Antigravity CLI. `agy models` 로 조회. Herdr `--kind agy` 와 같은 id |
+| `agy` | `--model` | `--effort` | Antigravity CLI. `agy models` 로 조회. Herdr `--kind agy` 와 같은 id. `gemini-3.8-flash-medium` 처럼 id 가 `-low`·`-medium`·`-high` 등으로 끝나면 effort 는 그 값으로 정해지고 `--effort` 는 붙지 않는다(TUI 에서 Effort 항목 숨김) |
 | `custom` | `--model` | `--effort` | 자유 입력 |
 
 ## 검증 방법
