@@ -125,23 +125,29 @@ skill rather than inventing a profile.
    runs. The user can then give you new instructions mid-task, and the job finishing is your signal
    to read the worker. Run it in the foreground only on a harness without background jobs.
 
-   To wait again on a worker that is already running, use `agent wait`, not `prompt --wait`. Wait
-   about 30 seconds first so the idle state from before the prompt does not end the wait at once:
+   To wait again on a worker (after a pane move broke the wait, say), use `agent wait`, not another
+   `prompt --wait`. Without `--until` it matches `idle`, `done`, or `blocked`:
 
    ```bash
-   herdr agent wait <worker-name> --until idle --until done --until blocked --until unknown
+   herdr agent wait <worker-name>
    ```
 
+   Right after a prompt sent without `--wait`, the worker can still show the idle state from before
+   the prompt, which ends the wait at once; give it about 30 seconds first. When Herdr reports the
+   worker's state as `unknown`, a wait cannot tell when it finishes; check its report file instead.
+
 7. **Read the answer, then decide why the worker stopped.** An idle or done state does not mean the
-   task finished. Read the report's last line and the pane:
+   task finished. Read the report's last line, then the pane:
 
    ```bash
+   tail -n 1 <report>                  # PowerShell: Get-Content <report> -Tail 1
    herdr agent read <worker-name> --source recent-unwrapped --lines 120
    ```
 
-   - The report changed and ends in a completion marker: the task finished; go to step 8.
-   - The report did not change: the worker stopped on a question, a permission dialog, or a usage
-     limit. See [When a worker stops mid-task](#when-a-worker-stops-mid-task).
+   - The report was written after your prompt (its modification time is newer) and its last line is
+     a completion marker: the task finished; go to step 8.
+   - Otherwise the worker stopped on a question, a permission dialog, or a usage limit. See
+     [When a worker stops mid-task](#when-a-worker-stops-mid-task).
 
 8. **Close or compact the worker.**
 
@@ -153,9 +159,8 @@ skill rather than inventing a profile.
      must start the line, and Herdr can report the worker `idle` while it compacts. Before the
      next task prompt, `herdr agent read` the worker and send only once the compaction has
      finished.
-   - A worker that stops at `REVIEW-READY <n>` is always kept, so compact it the moment it stops.
-     Doing this by hand gets forgotten; let the script that waits on the worker send it when it
-     sees the marker in a freshly written report.
+   - A worker that stops at `REVIEW-READY <n>` is always kept: compact it as described above as soon
+     as you have read its report, before anything else.
    - Do not replace or stop a worker only because its context is filling up; the harness compacts
      on its own.
 
