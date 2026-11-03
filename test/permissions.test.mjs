@@ -45,6 +45,23 @@ test("Codex emits sandbox and approval flags, followed by extra args", () => {
     ["-m", "test-model", "-c", "model_reasoning_effort=high", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--search"]);
 });
 
+test("Codex's own approval switches replace --ask-for-approval and refuse an explicit sandbox", () => {
+  assert.deepEqual(buildLaunchArgs({ harness: "codex", approval_policy: "approve-for-me" }), ["--approve-for-me"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "codex", approval_policy: "bypass" }), ["--dangerously-bypass-approvals-and-sandbox"]);
+  // Codex rejects both switches next to --sandbox, so the profile is refused before launch.
+  for (const approval_policy of ["approve-for-me", "bypass"]) {
+    assert.match(validateProfile({ ...base, sandbox: "read-only", approval_policy }).errors.join(" "), /leave sandbox on inherit/);
+  }
+});
+
+test("auto modes map to each harness's own flag", () => {
+  assert.deepEqual(buildLaunchArgs({ harness: "agy", permission_mode: "auto" }), ["--mode", "auto"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "omp", permission_mode: "always-ask-cached" }), ["--approval-mode=always-ask-cached"]);
+  assert.deepEqual(buildLaunchArgs({ harness: "opencode", permission_mode: "auto" }), ["--auto"]);
+  // OpenCode's auto is a flag, so its config stays as the profile set it.
+  assert.deepEqual(buildLaunchEnv({ harness: "opencode", permission_mode: "auto", env: { KEEP: "1" } }, {}), { KEEP: "1" });
+});
+
 test("Claude and OMP emit native permission flags while OpenCode uses env", () => {
   assert.deepEqual(buildLaunchArgs({ harness: "claude", permission_mode: "plan" }), ["--permission-mode", "plan"]);
   assert.deepEqual(buildLaunchArgs({ harness: "omp", permission_mode: "write" }), ["--approval-mode=write"]);

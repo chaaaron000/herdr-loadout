@@ -4,14 +4,16 @@ export const PERMISSION_FIELDS = ["sandbox", "approval_policy", "permission_mode
 export const PERMISSION_OPTIONS = {
   codex: {
     sandbox: ["read-only", "workspace-write", "danger-full-access"],
-    approval_policy: ["on-request", "never"],
+    // approve-for-me: approvals go to Codex's automatic reviewer; bypass: no prompts, no sandbox
+    approval_policy: ["on-request", "never", "approve-for-me", "bypass"],
   },
   claude: {
     permission_mode: ["manual", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
   },
-  omp: { permission_mode: ["always-ask", "write", "yolo"] },
-  opencode: { permission_mode: ["ask", "allow", "deny"] },
-  agy: { permission_mode: ["accept-edits", "plan", "dangerously-skip-permissions"] },
+  omp: { permission_mode: ["always-ask", "always-ask-cached", "write", "yolo"] },
+  // auto: approve what is not explicitly denied (`--auto`); the others set OpenCode's `permission`
+  opencode: { permission_mode: ["ask", "allow", "deny", "auto"] },
+  agy: { permission_mode: ["accept-edits", "auto", "plan", "dangerously-skip-permissions"] },
 };
 
 export function permissionOptions(harness, field) {
@@ -41,15 +43,29 @@ export function validatePermissions(profile) {
     if (options.length === 0) errors.push(`${field} is not supported by ${profile.harness}`);
     else if (!options.includes(value)) errors.push(`${field} must be one of ${options.join(" | ")}`);
   }
+  // Codex refuses these approval switches next to an explicit sandbox: each sets its own.
+  if (profile.harness === "codex" && CODEX_APPROVAL_SWITCHES[profile.approval_policy] && profile.sandbox) {
+    errors.push(`approval_policy ${profile.approval_policy} sets the sandbox itself; leave sandbox on inherit`);
+  }
   return errors;
 }
+
+/**
+ * Codex approval values that are switches of their own rather than
+ * `--ask-for-approval` values. Codex rejects each next to `--ask-for-approval`.
+ */
+const CODEX_APPROVAL_SWITCHES = {
+  "approve-for-me": "--approve-for-me",
+  bypass: "--dangerously-bypass-approvals-and-sandbox",
+};
 
 /** Permission flags follow legacy mode but precede caller-supplied extra args. */
 export function permissionArgs(profile) {
   const args = [];
   if (profile.harness === "codex") {
     if (profile.sandbox) args.push("--sandbox", profile.sandbox);
-    if (profile.approval_policy) args.push("--ask-for-approval", profile.approval_policy);
+    const approval = profile.approval_policy;
+    if (approval) args.push(...(CODEX_APPROVAL_SWITCHES[approval] ? [CODEX_APPROVAL_SWITCHES[approval]] : ["--ask-for-approval", approval]));
   } else if (profile.harness === "claude" && profile.permission_mode) {
     args.push("--permission-mode", profile.permission_mode);
   } else if (profile.harness === "omp" && profile.permission_mode) {
@@ -59,6 +75,9 @@ export function permissionArgs(profile) {
     args.push(...(profile.permission_mode === "dangerously-skip-permissions"
       ? ["--dangerously-skip-permissions"]
       : ["--mode", profile.permission_mode]));
+  } else if (profile.harness === "opencode" && profile.permission_mode === "auto") {
+    // The other OpenCode values go through its config (buildLaunchEnv); auto is a flag.
+    args.push("--auto");
   }
   return args;
 }
@@ -66,7 +85,7 @@ export function permissionArgs(profile) {
 /** OpenCode accepts runtime permissions via inline JSON, rather than a CLI flag. */
 export function buildLaunchEnv(profile, inheritedEnv = process.env) {
   const env = { ...profile.env };
-  if (profile.harness === "opencode" && profile.permission_mode) {
+  if (profile.harness === "opencode" && profile.permission_mode && profile.permission_mode !== "auto") {
     let config = {};
     const inlineConfig = env.OPENCODE_CONFIG_CONTENT ?? inheritedEnv.OPENCODE_CONFIG_CONTENT;
     if (inlineConfig) {

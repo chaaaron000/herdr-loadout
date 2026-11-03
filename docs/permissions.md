@@ -7,12 +7,21 @@
 | 하네스 | 프로필 필드 / CLI 옵션 | 값 | 실행 적용 |
 |---|---|---|---|
 | Codex | `sandbox` / `--sandbox` | `read-only`, `workspace-write`, `danger-full-access` | `--sandbox` |
-| Codex | `approval_policy` / `--approval-policy` | `on-request`, `never` | `--ask-for-approval` |
+| Codex | `approval_policy` / `--approval-policy` | `on-request`, `never`, `approve-for-me`, `bypass` | `on-request`·`never`는 `--ask-for-approval`, `approve-for-me`는 `--approve-for-me`, `bypass`는 `--dangerously-bypass-approvals-and-sandbox` |
 | Claude | `permission_mode` / `--permission-mode` | `manual`, `acceptEdits`, `auto`, `dontAsk`, `plan`, `bypassPermissions` | `--permission-mode` |
-| OMP | `permission_mode` / `--permission-mode` | `always-ask`, `write`, `yolo` | `--approval-mode=` |
-| OpenCode | `permission_mode` / `--permission-mode` | `ask`, `allow`, `deny` | `OPENCODE_CONFIG_CONTENT`의 `permission` |
-| Antigravity (`agy`) | `permission_mode` / `--permission-mode` | `accept-edits`, `plan`, `dangerously-skip-permissions` | `accept-edits`·`plan`은 `--mode`, 나머지는 `--dangerously-skip-permissions` |
+| OMP | `permission_mode` / `--permission-mode` | `always-ask`, `always-ask-cached`, `write`, `yolo` | `--approval-mode=` |
+| OpenCode | `permission_mode` / `--permission-mode` | `ask`, `allow`, `deny`, `auto` | `ask`·`allow`·`deny`는 `OPENCODE_CONFIG_CONTENT`의 `permission`, `auto`는 `--auto` |
+| Antigravity (`agy`) | `permission_mode` / `--permission-mode` | `accept-edits`, `auto`, `plan`, `dangerously-skip-permissions` | `accept-edits`·`auto`·`plan`은 `--mode`, 나머지는 `--dangerously-skip-permissions` |
 | Pi / custom | — | 전용 설정 없음 | 기존 `extra_args` / `env` 사용 |
+
+자동 승인 모드:
+
+- Codex `approve-for-me`는 승인 요청을 Codex의 자동 검토로 보내고 `workspace-write` 샌드박스를 쓴다.
+  `bypass`는 확인과 샌드박스를 모두 끈다(외부에서 격리된 환경 전용). Codex가 두 스위치를
+  `--sandbox`와 함께 받지 않으므로, 이 값을 쓸 때 `sandbox`를 지정하면 검증 오류가 난다.
+- OpenCode `auto`는 명시적으로 금지하지 않은 권한을 자동 승인한다. 설정 JSON의 `permission`을
+  바꾸지 않으므로 프로젝트나 사용자 설정의 `deny` 규칙은 그대로 지켜진다.
+- OMP `always-ask-cached`는 OMP의 `tools.approvalMode` 값으로 그대로 넘긴다(`omp --help` 기준).
 
 ```bash
 herdr-loadout set builder --sandbox workspace-write --approval-policy on-request

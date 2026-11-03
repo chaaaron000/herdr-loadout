@@ -91,10 +91,12 @@ Options:
   --from      read a profile from a JSON/TOML file, or - for stdin
   --force     allow overwriting an existing profile id
   --sandbox   Codex: read-only | workspace-write | danger-full-access
-  --approval-policy  Codex: on-request | never
-  --permission-mode  Claude / OMP / OpenCode permission mode (empty = inherit)
+  --approval-policy  Codex: on-request | never | approve-for-me | bypass
+                     (approve-for-me and bypass set the sandbox themselves)
+  --permission-mode  Claude / OMP / OpenCode / agy permission mode (empty = inherit)
     Claude: manual | acceptEdits | auto | dontAsk | plan | bypassPermissions
-    OMP: always-ask | write | yolo; OpenCode: ask | allow | deny
+    OMP: always-ask | always-ask-cached | write | yolo; OpenCode: ask | allow | deny | auto
+    agy: accept-edits | auto | plan | dangerously-skip-permissions
   --host      where the worker runs: herdr (TUI, default) or hc (Herdr app).
               launch --json adds \`argv\`, the whole command for \`hc run --\`; it goes
               through \`exec\` when the profile sets environment variables, which
