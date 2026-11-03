@@ -70,7 +70,9 @@ test("launch --host hc gives the harness argv, or exec when the profile sets env
 
     // hc run cannot set environment variables, so the CLI applies them itself.
     const envy = JSON.parse(run("launch", "envy", "--json", "--host", "hc").stdout);
-    assert.deepEqual(envy.argv, [process.execPath, CLI, "exec", "envy", "--host", "hc", "--project", root]);
+    // The CLI runs in `root`, and its cwd is the real path (macOS temp dirs sit behind /var -> /private/var).
+    const project = fs.realpathSync(root);
+    assert.deepEqual(envy.argv, [process.execPath, CLI, "exec", "envy", "--host", "hc", "--project", project]);
   });
 });
 
