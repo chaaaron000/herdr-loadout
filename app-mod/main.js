@@ -1,23 +1,65 @@
 // Agent Profiles: the herdr-loadout registry, edited in the Herdr app.
 //
-// Opened as a dialog (`mod.open herdr-loadout`, usually from a key). The list
-// shows the global profiles and the profiles of the project the focused
-// terminal is in; Enter edits one, a adds, c copies, d deletes, r drops a
-// project override, j lists the harnesses on this machine, Esc closes.
+// Opened as a window (`mod.open herdr-loadout`, usually from a key). The list
+// on the left shows the global profiles and the profiles of the project the
+// focused terminal is in, the selected one in full on the right. Enter edits
+// it, a adds, c copies, d deletes, r drops a project override, j lists the
+// harnesses on this machine, Esc closes.
 //
 // Every read and write goes through `herdr-loadout editor <action>`, the CLI's
 // JSON backend, so this editor follows the same rules as the terminal one.
 // `cli.js` (where node and the CLI are) and `picker.js` (the model filter and
 // orders) are written by the installer, scripts/install-app-mod.mjs.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, home, theme, settings, props, closeOverlay } from "herdr";
 import { CLI } from "./cli.js";
 import { pickerView, nextSort, SORT_LABELS } from "./picker.js";
 
 const SPINNER = "mods/workspace-chrome/spinner.svg";
-const ROW = { head: 28, profile: 50, field: 30, option: 28, harness: 54 };
+const AGENT_ICON = "icons/agent.svg";
+const CLOSE_ICON = "mods/workspace-chrome/x.svg";
+const CHEVRON_ICON = "mods/workspace-chrome/chevron-down.svg";
+const CHECK_ICON = "mods/workspace-chrome/check.svg";
+const SEARCH_ICON = "mods/workspace-chrome/search.svg";
+const ROW = { head: 32, profile: 50, empty: 28, fieldHead: 32, field: 38, option: 30, harness: 62 };
+
+/** Which group each editor field sits under. */
+const GROUP_OF = {
+  name: "Profile",
+  harness: "Launch",
+  model: "Launch",
+  effort: "Launch",
+  sandbox: "Permissions",
+  approval_policy: "Permissions",
+  permission_mode: "Permissions",
+  cost: "Routing",
+  when_to_use: "Routing",
+  avoid_when: "Routing",
+  // The editor lists extra args before tags, so both sit in the last group.
+  extra_args: "More",
+  tags: "More",
+};
+
+// The app's own program icons: full-color ones draw as images, one-color ones take the text color.
+const HARNESS_ICONS = {
+  claude: ["icons/claude.svg", false],
+  codex: ["icons/codex.svg", false],
+  agy: ["icons/antigravity.svg", false],
+  opencode: ["icons/opencode.svg", true],
+  pi: ["icons/pi.svg", true],
+};
+
+function harnessIcon(t, harness, size) {
+  const [path, tint] = HARNESS_ICONS[harness] ?? [AGENT_ICON, true];
+  return tint ? svg(path).size(size).flex_none().text_color(t.muted) : image(path).w(size).h(size).flex_none();
+}
+
+function costColor(t, cost) {
+  return { cheap: t.ansi2, expensive: t.ansi3 }[cost] ?? t.muted;
+}
+
 // The editor opens as a window (so Esc reaches it instead of closing it), and
 // a window drags on any press its mod doesn't stop: controls stop theirs.
 const keepPress = (_e, cx) => cx.stop_propagation();
@@ -102,6 +144,8 @@ export default class Profiles extends View {
     this.handle = cx.focus_handle();
     this.text = InputState.new({});
     this.text.on("submit", (_e, cx) => this.commitText(cx));
+    // Clicking elsewhere keeps what was typed, as a form would.
+    this.text.on("blur", (_e, cx) => this.commitText(cx));
     this.filter = InputState.new({ placeholder: "Filter: words match the id, provider or label" });
     this.filter.on("change", (_e, cx) => {
       if (!this.ed) return;
@@ -233,10 +277,18 @@ export default class Profiles extends View {
   }
 
   /**
-   * Ask the backend for the draft's fields, after one change. A later request
-   * wins: an answer that arrives after a newer one is dropped.
+   * Ask the backend for the draft's fields, after one change. Requests run one
+   * after another, each on the draft the previous one left, so two quick
+   * changes (typing, then a click) both land.
    */
-  async view(change, cx) {
+  view(change, cx) {
+    const run = () => this.viewNow(change, cx);
+    this.viewChain = (this.viewChain ?? Promise.resolve()).then(run, run);
+    return this.viewChain;
+  }
+
+  /** An answer meant for a draft that has since been closed or replaced is dropped. */
+  async viewNow(change, cx) {
     const ed = this.ed;
     if (!ed) return;
     const seq = ++ed.seq;
@@ -330,6 +382,24 @@ export default class Profiles extends View {
     return Boolean(f && (f.field === "model" || (f.options?.length ?? 0) > 8));
   }
 
+  /** A short choice list drawn as buttons in the field itself; null when it needs the picker. */
+  segments(f) {
+    if (!f?.options || f.field === "model" || f.pending) return null;
+    const chars = f.options.reduce((sum, option) => sum + String(option.id).length, 0);
+    return f.options.length <= 7 && chars <= 56 ? f.options : null;
+  }
+
+  /** Step a button-row field to its next (or previous) choice. */
+  stepChoice(cx, direction) {
+    const f = this.field();
+    const options = this.segments(f);
+    if (!options) return false;
+    const at = Math.max(0, options.findIndex((option) => option.id === f.value));
+    const next = options[(at + direction + options.length) % options.length];
+    this.change(cx, { set: { field: f.field, value: next.id } });
+    return true;
+  }
+
   applyOption(cx) {
     const ed = this.ed;
     if (!ed || ed.mode !== "pick") return;
@@ -339,10 +409,24 @@ export default class Profiles extends View {
     this.change(cx, { set: { field: this.field().field, value: row.id } });
   }
 
+  /** Keep what is being typed before a click moves elsewhere. */
+  leaveTyping(cx) {
+    if (this.ed?.mode === "type") this.commitText(cx);
+  }
+
   commitText(cx) {
     const ed = this.ed;
     if (!ed || ed.mode !== "type") return;
-    this.change(cx, { set: { field: this.field().field, value: this.text.value() } });
+    const f = this.field();
+    const value = this.text.value();
+    if (value === f.text) {
+      // Nothing typed: leave the field without a round trip.
+      ed.mode = "fields";
+      this.focusNow();
+      cx.notify();
+      return;
+    }
+    this.change(cx, { set: { field: f.field, value } });
   }
 
   save(cx, target) {
@@ -360,12 +444,18 @@ export default class Profiles extends View {
 
   test(cx) {
     const ed = this.ed;
-    ed.status = { text: "testing the launch…", ok: true };
+    ed.status = { text: "Testing the launch…", ok: true };
     this.task(cx, async () => {
       const r = await this.call("test", { draft: ed.draft });
-      ed.status = r.ok
-        ? { text: r.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.label}`).join("   "), ok: r.launchable }
-        : { text: r.error, ok: false };
+      if (!r.ok) {
+        ed.status = { text: r.error, ok: false };
+        return;
+      }
+      // A pass needs no detail; a failure names each check that failed.
+      const failed = r.checks.filter((c) => !c.ok);
+      ed.status = r.launchable
+        ? { text: `Launches: ${r.checks.length} checks passed`, ok: true }
+        : { text: failed.map((c) => `${c.label}: ${c.detail}`).join(" · "), ok: false };
     });
   }
 
@@ -373,7 +463,7 @@ export default class Profiles extends View {
     const ed = this.ed;
     if (ed.dirty && !ed.discardArmed) {
       ed.discardArmed = true;
-      ed.status = { text: "unsaved changes — Esc again to discard, g or p to save", ok: false };
+      ed.status = { text: "Unsaved changes. Discard again to drop them, or save.", ok: false };
       cx.notify();
       return;
     }
@@ -424,6 +514,8 @@ export default class Profiles extends View {
       else return false;
       return true;
     }
+    // A message stands in for the action buttons until the next key.
+    this.message = null;
     const count = this.registry?.profiles.length ?? 0;
     if (k === "escape") this.dismiss();
     else if (k === "down" && count) this.selected = Math.min(count - 1, this.selected + 1);
@@ -483,6 +575,7 @@ export default class Profiles extends View {
     const count = ed.fields.length;
     if (k === "down") ed.cursor = Math.min(count - 1, ed.cursor + 1);
     else if (k === "up") ed.cursor = Math.max(0, ed.cursor - 1);
+    else if ((k === "left" || k === "right") && this.segments(this.field())) this.stepChoice(cx, k === "right" ? 1 : -1);
     else if (k === "enter" || k === "e") this.openField(cx);
     else if (k === "g" && ed.kind !== "project") this.save(cx, "global");
     else if (k === "p") this.save(cx, "project");
@@ -496,29 +589,71 @@ export default class Profiles extends View {
 
   // ---- drawing ----
 
+  /** A key as a small keycap. */
+  kbd(t, key, { inverse = false } = {}) {
+    return div()
+      .flex_none()
+      .h(18)
+      .px(5)
+      .flex()
+      .items_center()
+      .rounded(4)
+      .border_1()
+      .border_color(inverse ? t.solid_foreground : t.border)
+      .text_size(10.5)
+      .font_medium()
+      .text_color(inverse ? t.solid_foreground : t.muted)
+      .child(key);
+  }
+
   button(t, id, keys, label, onClick, { primary = false, enabled = true } = {}) {
     return h_flex()
       .id(id)
       .on_mouse_down("left", keepPress)
-      .h(26)
-      .px(9)
-      .gap(6)
+      .flex_none()
+      .h(30)
+      .pl(6)
+      .pr(10)
+      .gap(7)
       .items_center()
       .rounded(7)
-      .text_size(12)
+      .text_size(12.5)
       .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground))
-      .when(!primary, (el) => el.border_1().border_color(t.input).bg(t.raised).text_color(t.foreground))
-      .when(!enabled, (el) => el.opacity(0.4))
-      .when(enabled, (el) => el.cursor_pointer().hover((s) => (primary ? s.opacity(0.85) : s.bg(t.hover))).on_click((_e, cx) => onClick(cx)))
-      .child(div().text_size(11).font_semibold().text_color(primary ? t.solid_foreground : t.accent).child(keys))
+      .when(!primary, (el) => el.text_color(t.foreground))
+      .when(!enabled, (el) => el.opacity(0.35))
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => (primary ? s.opacity(0.88) : s.bg(t.hover))).on_click((_e, cx) => onClick(cx)))
+      .child(this.kbd(t, keys, { inverse: primary }))
       .child(label);
   }
 
-  /** One line of feedback: `tone` is "ok", "error", or "diff" (how a field differs from global). */
+  /** A rounded label: an origin, a cost, whether the harness is installed. */
+  pill(t, text, color) {
+    return div()
+      .flex_none()
+      .h(20)
+      .px(8)
+      .flex()
+      .items_center()
+      .rounded(10)
+      .border_1()
+      .border_color(color)
+      .text_size(11)
+      .text_color(color)
+      .child(text);
+  }
+
+  /** One line of feedback with its mark: `tone` is "ok", "error", or "diff". */
   statusLine(t, status) {
-    if (!status) return null;
-    const color = { ok: t.done, error: t.blocked, diff: t.ansi5 }[status.tone ?? (status.ok ? "ok" : "error")];
-    return div().text_size(12).line_height("18px").text_color(color).child(status.text);
+    const tone = status.tone ?? (status.ok ? "ok" : "error");
+    const color = { ok: t.ansi2, error: t.blocked, diff: t.ansi5 }[tone];
+    return h_flex()
+      .flex_1()
+      .min_w(0)
+      .gap(7)
+      .items_center()
+      .text_size(12)
+      .child(div().flex_none().text_color(color).child({ ok: "✓", error: "✗", diff: "≠" }[tone]))
+      .child(div().flex_1().min_w(0).truncate().text_color(tone === "error" ? t.blocked : t.muted).child(status.text));
   }
 
   measured(id, onHeight, child) {
@@ -535,14 +670,73 @@ export default class Profiles extends View {
       .child(child);
   }
 
+  header(t) {
+    const title = this.page === "detect" ? "Harnesses" : this.page === "edit" && this.ed ? (this.ed.draft.id ? `Edit ${this.ed.draft.id}` : "New profile") : "Agent Profiles";
+    const project = this.project.split(/[\\/]/).filter(Boolean).pop() ?? this.project;
+    return h_flex()
+      .flex_none()
+      .h(56)
+      .px(20)
+      .gap(12)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .child(svg(AGENT_ICON).size(18).flex_none().text_color(t.accent))
+      .child(
+        v_flex()
+          .flex_1()
+          .min_w(0)
+          .child(
+            h_flex()
+              .gap(8)
+              .items_center()
+              .child(div().text_size(14.5).font_semibold().text_color(t.foreground).child(title))
+              .when(this.page === "edit" && Boolean(this.ed?.dirty), (el) => el.child(div().text_size(11.5).text_color(t.ansi3).child("● unsaved"))),
+          )
+          .child(div().truncate().text_size(11.5).text_color(t.dim).child(`project ${project} · ${this.project}`)),
+      )
+      .when(this.busy > 0, (el) => el.child(svg(SPINNER).size(14).flex_none().text_color(t.working).spin(900)))
+      .child(
+        div()
+          .id("lo-x")
+          .on_mouse_down("left", keepPress)
+          .flex_none()
+          .size(28)
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(7)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .on_click(() => this.dismiss())
+          .child(svg(CLOSE_ICON).size(14).text_color(t.muted)),
+      );
+  }
+
+  footer(t, left, right) {
+    return h_flex()
+      .flex_none()
+      .h(56)
+      .px(16)
+      .gap(6)
+      .items_center()
+      .border_t(1)
+      .border_color(t.border)
+      .child(h_flex().flex_1().min_w(0).gap(6).items_center().children(left))
+      .children(right);
+  }
+
+  // -- list --
+
   listPage(t) {
     const reg = this.registry;
     if (!reg) {
-      return v_flex().flex_1().items_center().justify_center().text_color(this.loadError ? t.blocked : t.dim).child(this.loadError ?? "Reading profiles…");
+      return v_flex().flex_1().items_center().justify_center().text_size(13).text_color(this.loadError ? t.blocked : t.dim).child(this.loadError ?? "Reading profiles…");
     }
     const detected = new Map(reg.detection.map((d) => [d.id, d.detected]));
+    const global = reg.profiles.filter((p) => p.origin !== "project-only").length;
+    const local = reg.profiles.length - global;
     const rows = [];
-    const projectRows = reg.profiles.filter((p) => p.origin === "project-only").length;
     let section = null;
     reg.profiles.forEach((p, index) => {
       const s = p.origin === "project-only" ? "project" : "global";
@@ -550,35 +744,33 @@ export default class Profiles extends View {
       section = s;
       rows.push({ kind: "profile", p, index, h: ROW.profile });
     });
-    if (projectRows === 0) rows.push({ kind: "head", section: "project", h: ROW.head });
+    if (local === 0) rows.push({ kind: "head", section: "project", h: ROW.head }, { kind: "empty", h: ROW.empty });
     const selectedRow = rows.findIndex((r) => r.kind === "profile" && r.index === this.selected);
-    const where = reg.projectPath ?? `${reg.projectTarget} (created on first save)`;
 
     const draw = (r) => {
       if (r.kind === "head") {
-        const global = r.section === "global";
         return h_flex()
           .px(10)
-          .pt(8)
-          .gap(8)
+          .pt(10)
           .items_center()
-          .text_size(11.5)
+          .text_size(11)
           .font_semibold()
-          .text_color(global ? t.accent : t.ansi5)
-          .child(global ? "Global profiles" : `Project profiles${projectRows === 0 ? " (none)" : ""}`)
-          .when(!global, (el) => el.child(div().flex_1().min_w(0).truncate().font_normal().text_color(t.dim).child(where)));
+          .text_color(t.dim)
+          .child(div().flex_1().child(r.section === "global" ? "GLOBAL" : "THIS PROJECT"))
+          .child(div().font_normal().child(String(r.section === "global" ? global : local)));
+      }
+      if (r.kind === "empty") {
+        return div().px(10).pt(4).text_size(12).text_color(t.dim).child("Nothing here yet");
       }
       const p = r.p;
       const on = r.index === this.selected;
-      const mark = detected.get(p.harness);
-      const override = p.origin === "project-override";
-      return v_flex()
+      return h_flex()
         .id(`lo-p-${p.id}`)
         .on_mouse_down("left", keepPress)
-        .mx(4)
+        .mx(2)
         .px(10)
-        .py(6)
-        .gap(2)
+        .gap(10)
+        .items_center()
         .rounded(8)
         .cursor_pointer()
         .when(on, (el) => el.bg(t.selected))
@@ -590,149 +782,307 @@ export default class Profiles extends View {
           if (again || e.click_count > 1) this.open(cx, "edit");
           cx.notify();
         })
+        .child(div().flex_none().when(detected.get(p.harness) === false, (el) => el.opacity(0.4)).child(harnessIcon(t, p.harness, 18)))
         .child(
-          h_flex()
-            .gap(8)
-            .items_center()
-            .child(div().flex_none().text_size(13.5).font_semibold().text_color(t.foreground).child(p.name ?? p.id))
-            .child(div().flex_none().text_size(11.5).text_color(t.dim).child(p.id))
-            .when(override, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.ansi5).child(p.differing ? `≠ ${p.differing}` : "≠ override (same values)"))),
-        )
-        .child(
-          h_flex()
-            .gap(6)
-            .items_center()
-            .text_size(12)
-            .text_color(t.muted)
-            .child(div().flex_none().w(12).text_color(mark === undefined ? t.dim : mark ? t.ansi2 : t.blocked).child(mark === undefined ? "·" : mark ? "✓" : "✗"))
-            .child(div().flex_1().min_w(0).truncate().child(`${p.harness} · ${p.model} · ${p.effort} · ${p.cost ?? "normal"}`)),
+          v_flex()
+            .flex_1()
+            .min_w(0)
+            .gap(1)
+            .child(
+              h_flex()
+                .gap(6)
+                .items_center()
+                .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child(p.name ?? p.id))
+                .when(p.origin === "project-override", (el) => el.child(div().flex_none().text_size(11).text_color(t.ansi5).child("≠"))),
+            )
+            .child(div().truncate().text_size(11.5).text_color(t.muted).child(`${p.model} · ${p.effort}`)),
         );
     };
 
-    const p = this.profile();
-    return v_flex()
+    return h_flex()
       .flex_1()
       .min_h(0)
-      .gap(10)
-      .child(this.measured("lo-list", "listHeight", this.listStrip.render("lo-list-strip", rows, this.listHeight, selectedRow, draw)))
-      .when(Boolean(p), (el) =>
-        el.child(
-          v_flex()
-            .flex_none()
-            .p(10)
-            .gap(4)
-            .rounded(8)
-            .bg(t.background)
-            .border_1()
-            .border_color(t.border)
-            .text_size(12.5)
-            .line_height("18px")
-            .child(h_flex().gap(6).child(div().flex_none().w(52).text_color(t.dim).child("When")).child(div().flex_1().min_w(0).text_color(t.foreground).child(p.when_to_use ?? "")))
-            .when(Boolean(p.avoid_when), (el) => el.child(h_flex().gap(6).child(div().flex_none().w(52).text_color(t.dim).child("Avoid")).child(div().flex_1().min_w(0).text_color(t.muted).child(p.avoid_when)))),
-        ),
-      );
+      .items_start()
+      .child(
+        v_flex()
+          .w(290)
+          .h_full()
+          .flex_none()
+          .p(8)
+          .border_r(1)
+          .border_color(t.border)
+          .child(this.measured("lo-list", "listHeight", this.listStrip.render("lo-list-strip", rows, this.listHeight, selectedRow, draw))),
+      )
+      .child(this.profileDetail(t, detected));
+  }
+
+  profileDetail(t, detected) {
+    const p = this.profile();
+    if (!p) {
+      return v_flex().flex_1().h_full().items_center().justify_center().gap(6).text_size(13).text_color(t.dim).child("No profiles yet").child(div().text_size(12).child("Press a to add one."));
+    }
+    const installed = detected.get(p.harness);
+    const origin = { global: ["Global", t.muted], "project-override": ["Project override", t.ansi5], "project-only": ["This project", t.ansi5] }[p.origin] ?? ["Global", t.muted];
+    const permissions = [p.sandbox, p.approval_policy, p.permission_mode].filter(Boolean).join(" · ");
+    const facts = [
+      ["Harness", p.harness],
+      ["Model", p.model],
+      ["Effort", p.effort],
+      ["Permissions", permissions || "inherit"],
+      ["Tags", (p.tags ?? []).join(", ")],
+      ["Extra args", (p.extra_args ?? []).join(" ")],
+    ].filter(([, value]) => value);
+    const block = (label, text, color) =>
+      v_flex()
+        .gap(4)
+        .child(div().text_size(11).font_semibold().text_color(t.dim).child(label))
+        .child(div().text_size(12.5).line_height("19px").text_color(color).child(text));
+    return v_flex()
+      .id("lo-detail")
+      .flex_1()
+      .h_full()
+      .min_w(0)
+      .p(20)
+      .gap(16)
+      .overflow_y_scroll()
+      .child(
+        h_flex()
+          .gap(12)
+          .items_center()
+          .child(harnessIcon(t, p.harness, 28))
+          .child(
+            v_flex()
+              .flex_1()
+              .min_w(0)
+              .child(div().truncate().text_size(17).font_semibold().text_color(t.foreground).child(p.name ?? p.id))
+              .child(div().text_size(12).text_color(t.dim).child(p.id)),
+          ),
+      )
+      .child(
+        h_flex()
+          .gap(6)
+          .flex_wrap()
+          .child(this.pill(t, origin[0], origin[1]))
+          .child(this.pill(t, p.cost ?? "normal", costColor(t, p.cost)))
+          .when(installed !== undefined, (el) => el.child(this.pill(t, installed ? `${p.harness} installed` : `${p.harness} not found`, installed ? t.ansi2 : t.blocked))),
+      )
+      .child(
+        v_flex()
+          .gap(6)
+          .p(12)
+          .rounded(8)
+          .bg(t.background)
+          .border_1()
+          .border_color(t.border)
+          .children(
+            facts.map(([label, value]) =>
+              h_flex()
+                .gap(12)
+                .text_size(12.5)
+                .child(div().flex_none().w(86).text_color(t.dim).child(label))
+                .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(value)),
+            ),
+          ),
+      )
+      .when(p.origin === "project-override", (el) =>
+        el.child(div().text_size(12).text_color(t.ansi5).child(p.differing ? `This project changes ${p.differing}.` : "This project restates the global values.")),
+      )
+      .child(block("WHEN TO USE", p.when_to_use ?? "", t.foreground))
+      .when(Boolean(p.avoid_when), (el) => el.child(block("AVOID WHEN", p.avoid_when, t.muted)));
   }
 
   listFooter(t) {
     if (this.pending) {
-      return h_flex()
-        .gap(8)
-        .items_center()
-        .child(div().flex_1().text_size(12.5).text_color(t.blocked).child(this.pending.question))
-        .child(this.button(t, "lo-yes", "y", this.pending.action === "reset" ? "Reset" : "Delete", (cx) => this.answer(cx, true), { primary: true }))
-        .child(this.button(t, "lo-no", "n", "Cancel", (cx) => this.answer(cx, false)));
+      return this.footer(
+        t,
+        [div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.blocked).child(this.pending.question)],
+        [
+          this.button(t, "lo-no", "n", "Cancel", (cx) => this.answer(cx, false)),
+          this.button(t, "lo-yes", "y", this.pending.action === "reset" ? "Reset" : "Delete", (cx) => this.answer(cx, true), { primary: true }),
+        ],
+      );
     }
     const p = this.profile();
-    return h_flex()
-      .gap(6)
-      .items_center()
-      .flex_wrap()
-      .child(this.button(t, "lo-edit", "Enter", "Edit", (cx) => this.open(cx, "edit"), { enabled: Boolean(p) }))
-      .child(this.button(t, "lo-add", "a", "Add", (cx) => this.open(cx, "new")))
-      .child(this.button(t, "lo-copy", "c", "Copy", (cx) => this.open(cx, "copy"), { enabled: Boolean(p) }))
-      .child(this.button(t, "lo-del", "d", "Delete", (cx) => this.ask(cx, "delete"), { enabled: Boolean(p) }))
-      .when(p?.origin === "project-override", (el) => el.child(this.button(t, "lo-reset", "r", "Reset override", (cx) => this.ask(cx, "reset"))))
-      .child(this.button(t, "lo-detect", "j", "Harnesses", (cx) => this.showHarnesses(cx)))
-      .child(div().flex_1())
-      .child(this.button(t, "lo-close", "Esc", "Close", () => this.dismiss()));
+    const left = this.message
+      ? [this.statusLine(t, this.message)]
+      : [
+          this.button(t, "lo-add", "a", "New", (cx) => this.open(cx, "new")),
+          this.button(t, "lo-copy", "c", "Copy", (cx) => this.open(cx, "copy"), { enabled: Boolean(p) }),
+          this.button(t, "lo-del", "d", "Delete", (cx) => this.ask(cx, "delete"), { enabled: Boolean(p) }),
+          ...(p?.origin === "project-override" ? [this.button(t, "lo-reset", "r", "Reset override", (cx) => this.ask(cx, "reset"))] : []),
+          this.button(t, "lo-detect", "j", "Harnesses", (cx) => this.showHarnesses(cx)),
+        ];
+    return this.footer(t, left, [this.button(t, "lo-edit", "Enter", "Edit", (cx) => this.open(cx, "edit"), { primary: true, enabled: Boolean(p) })]);
   }
 
-  scopeLine() {
+  // -- editor --
+
+  scope(t) {
     const ed = this.ed;
-    const target = this.registry?.projectTarget ?? "";
-    return {
-      project: `project profile · p saves to ${target}`,
-      global: "global profile · g saves global · p saves a project override",
-      override: "global profile with a project override · ≠ differs from global · g global · p project",
-      new: "new profile · g saves to global · p saves to this project",
+    const [label, color, text] = {
+      project: ["This project", t.ansi5, "Saves to this project's file."],
+      global: ["Global", t.muted, "g saves for every project · p saves an override for this one."],
+      override: ["Project override", t.ansi5, "≠ marks what this project changes · g edits global · p edits the override."],
+      new: ["New", t.accent, "g saves to global · p saves to this project."],
     }[ed.kind];
+    return h_flex()
+      .flex_none()
+      .gap(10)
+      .items_center()
+      .child(this.pill(t, label, color))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(text));
+  }
+
+  /** The choices of a short list as a row of buttons; one click sets the field. */
+  choiceButtons(t, f, index, options) {
+    const ed = this.ed;
+    return h_flex()
+      .flex_1()
+      .min_w(0)
+      .gap(4)
+      .items_center()
+      .children(
+        options.map((option) => {
+          const chosen = option.id === f.value;
+          return div()
+            .id(`lo-c-${f.field}-${option.id}`)
+            .on_mouse_down("left", keepPress)
+            .flex_none()
+            .h(28)
+            .px(10)
+            .flex()
+            .items_center()
+            .rounded(7)
+            .border_1()
+            .border_color(chosen ? t.accent : t.border)
+            .text_size(12)
+            .text_color(chosen ? t.foreground : t.muted)
+            .when(chosen, (el) => el.bg(t.selected))
+            .when(!chosen, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
+            .on_click((_e, cx) => {
+              if (this.busy) return;
+              this.leaveTyping(cx);
+              ed.cursor = index;
+              if (!chosen) this.change(cx, { set: { field: f.field, value: option.id } });
+              cx.notify();
+            })
+            .child(option.id);
+        }),
+      );
+  }
+
+  /** Put one field back to its global value. */
+  revertButton(t, f) {
+    return div()
+      .id(`lo-rv-${f.field}`)
+      .on_mouse_down("left", keepPress)
+      .flex_none()
+      .w(26)
+      .h(26)
+      .flex()
+      .items_center()
+      .justify_center()
+      .rounded(6)
+      .text_size(14)
+      .text_color(t.ansi5)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => {
+        if (this.busy) return;
+        this.leaveTyping(cx);
+        this.ed.cursor = this.ed.fields.indexOf(f);
+        this.change(cx, { revert: f.field });
+      })
+      .child("↺");
   }
 
   editPage(t) {
     const ed = this.ed;
-    const rows = ed.fields.map((f, i) => ({ f, i, h: ROW.field }));
     const picking = ed.mode === "pick";
-    const f = this.field();
-    const drawField = (r) => {
+    const rows = [];
+    let group = null;
+    ed.fields.forEach((f, i) => {
+      const g = GROUP_OF[f.field] ?? "More";
+      if (g !== group) rows.push({ kind: "head", label: g, h: ROW.fieldHead });
+      group = g;
+      rows.push({ kind: "field", f, i, h: ROW.field });
+    });
+    const selectedRow = rows.findIndex((r) => r.kind === "field" && r.i === ed.cursor);
+    // Global and override drafts can put a field back to its global value.
+    const revertable = ed.kind === "global" || ed.kind === "override";
+
+    const draw = (r) => {
+      if (r.kind === "head") {
+        return div().px(4).pt(10).text_size(11).font_semibold().text_color(t.dim).child(r.label.toUpperCase());
+      }
+      const f = r.f;
       const on = r.i === ed.cursor;
       const typing = on && ed.mode === "type";
+      const segments = this.segments(f);
+      const box = (child) =>
+        h_flex()
+          .flex_1()
+          .min_w(0)
+          .h(30)
+          .px(10)
+          .gap(8)
+          .items_center()
+          .rounded(7)
+          .border_1()
+          .border_color(on ? t.accent : t.border)
+          .bg(t.background)
+          .child(child)
+          .when(Boolean(f.options) && !typing, (el) => el.child(svg(CHEVRON_ICON).size(13).flex_none().text_color(on ? t.accent : t.dim)));
       return h_flex()
-        .id(`lo-f-${r.f.field}`)
+        .id(`lo-f-${f.field}`)
         .on_mouse_down("left", keepPress)
-        .mx(2)
-        .px(10)
-        .gap(10)
+        .px(4)
+        .gap(12)
         .items_center()
-        .rounded(7)
         .cursor_pointer()
-        .when(on, (el) => el.bg(t.selected))
-        .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
         .on_click((_e, cx) => {
-          if (this.busy) return;
-          const again = ed.cursor === r.i && ed.mode === "fields";
+          if (this.busy || (on && ed.mode === "type")) return;
+          this.leaveTyping(cx);
+          // A click opens the field; a click on the open one closes it.
+          const open = on && ed.mode === "pick";
           ed.cursor = r.i;
           ed.mode = "fields";
-          this.focusNow();
-          if (again) this.openField(cx);
+          ed.status = null;
+          if (!open && !this.segments(f)) this.openField(cx);
+          else this.focusNow();
           cx.notify();
         })
-        .child(div().flex_none().w(130).text_size(12.5).text_color(on ? t.accent : t.muted).child(r.f.label))
         .child(
-          typing
-            ? Input.new(this.text).flex_1().h(24).px(8).rounded(6).border_1().border_color(t.accent).bg(t.background).text_size(12.5).text_color(t.foreground)
-            : div().flex_1().min_w(0).truncate().text_size(12.5).text_color(r.f.value ? t.foreground : t.dim).child(r.f.value || "(unset)"),
+          h_flex()
+            .flex_none()
+            .w(150)
+            .gap(6)
+            .items_center()
+            .child(div().text_size(12.5).text_color(on ? t.foreground : t.muted).child(f.label))
+            .when(f.differs, (el) => el.child(div().text_size(11.5).text_color(t.ansi5).child("≠"))),
         )
-        .child(div().flex_none().w(14).text_size(12).text_color(t.ansi5).child(r.f.differs ? "≠" : ""))
-        .child(div().flex_none().w(12).text_size(11).text_color(t.dim).child(r.f.options ? "▾" : ""));
+        .child(
+          segments
+            ? this.choiceButtons(t, f, r.i, segments)
+            : typing
+              ? box(Input.new(this.text).flex_1().h_full().text_size(12.5).text_color(t.foreground))
+              : box(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(f.value ? t.foreground : t.dim).child(f.value || "not set")),
+        )
+        .when(revertable, (el) => el.child(f.differs ? this.revertButton(t, f) : div().flex_none().w(26)));
     };
 
-    const note = ed.status
-      ? null
-      : f?.note
-        ? { text: f.note, ok: false }
-        : f?.differs
-          ? { text: `≠ global: ${f.global}${ed.kind === "project" || ed.kind === "new" ? "" : "  ·  r reverts this field"}`, tone: "diff" }
-          : null;
-
+    const fieldsHeight = picking ? Math.min(rows.length, 4) * ROW.field : this.fieldHeight;
+    const fields = this.fieldStrip.render("lo-fields", rows, fieldsHeight, selectedRow, draw);
     return v_flex()
       .flex_1()
       .min_h(0)
-      .gap(8)
-      .child(
-        h_flex()
-          .gap(10)
-          .items_center()
-          .child(div().text_size(14).font_semibold().text_color(t.foreground).child(ed.draft.id ? `Edit ${ed.draft.id}` : "New profile"))
-          .when(ed.dirty, (el) => el.child(div().text_size(12).text_color(t.ansi3).child("● unsaved"))),
-      )
-      .child(div().text_size(12).text_color(ed.kind === "project" || ed.kind === "override" ? t.ansi5 : t.dim).truncate().child(this.scopeLine()))
-      .child(
-        picking
-          ? v_flex().flex_none().child(this.fieldStrip.render("lo-fields", rows, Math.min(rows.length * ROW.field, 4 * ROW.field), ed.cursor, drawField))
-          : this.measured("lo-fields-box", "fieldHeight", this.fieldStrip.render("lo-fields", rows, this.fieldHeight, ed.cursor, drawField)),
-      )
-      .when(picking, (el) => el.child(this.pickerPanel(t)))
-      .when(Boolean(ed.status ?? note), (el) => el.child(this.statusLine(t, ed.status ?? note)));
+      .px(20)
+      .pt(16)
+      .pb(8)
+      .gap(10)
+      .child(this.scope(t))
+      .child(picking ? v_flex().flex_none().child(fields) : this.measured("lo-fields-box", "fieldHeight", fields))
+      .when(picking, (el) => el.child(this.pickerPanel(t)));
   }
 
   pickerPanel(t) {
@@ -748,7 +1098,6 @@ export default class Profiles extends View {
       return h_flex()
         .id(`lo-o-${r.i}`)
         .on_mouse_down("left", keepPress)
-        .mx(2)
         .px(10)
         .gap(10)
         .items_center()
@@ -760,26 +1109,64 @@ export default class Profiles extends View {
           ed.option = r.i;
           this.applyOption(cx);
         })
-        .child(div().flex_none().w(10).text_color(t.accent).child(current ? "•" : ""))
+        .child(div().flex_none().w(14).child(current ? svg(CHECK_ICON).size(13).text_color(t.accent) : div()))
         .child(div().flex_none().text_size(12.5).text_color(t.foreground).child(r.o.id))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(r.o.label && r.o.label !== r.o.id ? r.o.label : ""))
         .when(Boolean(r.o.context), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${Math.round(r.o.context / 1000)}k`)));
     };
     const header = h_flex()
+      .flex_none()
       .gap(8)
       .items_center()
-      .text_size(11.5)
-      .text_color(t.dim)
-      .child(div().font_semibold().text_color(t.muted).child(f.label))
-      .child(div().child(`${SORT_LABELS[ed.sort]} (Tab)`))
+      .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child(`Choose ${f.label.toLowerCase()}`))
       .child(div().flex_1())
-      .child(div().child(shown.length ? `${ed.option + 1}/${shown.length}${shown.length !== view.total ? ` of ${view.total}` : ""}` : ""));
+      .when(shown.length > 1, (el) =>
+        el.child(
+          h_flex()
+            .id("lo-sort")
+            .on_mouse_down("left", keepPress)
+            .gap(6)
+            .items_center()
+            .px(6)
+            .h(22)
+            .rounded(6)
+            .cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => {
+              ed.sort = nextSort(ed.sort);
+              ed.option = 0;
+              cx.notify();
+            })
+            .child(div().text_size(11.5).text_color(t.muted).child(SORT_LABELS[ed.sort]))
+            .child(this.kbd(t, "Tab")),
+        ),
+      )
+      .child(div().text_size(11.5).text_color(t.dim).child(shown.length ? `${ed.option + 1} / ${shown.length}${shown.length !== view.total ? ` of ${view.total}` : ""}` : ""))
+      .child(
+        div()
+          .id("lo-pick-x")
+          .on_mouse_down("left", keepPress)
+          .flex_none()
+          .size(22)
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(6)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => {
+            ed.mode = "fields";
+            this.focusNow();
+            cx.notify();
+          })
+          .child(svg(CLOSE_ICON).size(12).text_color(t.muted)),
+      );
     return v_flex()
       .flex_1()
       .min_h(0)
-      .gap(6)
-      .p(8)
-      .rounded(8)
+      .gap(8)
+      .p(10)
+      .rounded(10)
       .bg(t.background)
       .border_1()
       .border_color(t.border)
@@ -789,64 +1176,69 @@ export default class Profiles extends View {
           h_flex()
             .id("lo-filter")
             .on_mouse_down("left", keepPress)
-            .h(30)
+            .h(32)
             .flex_none()
-            .px(8)
+            .px(10)
             .gap(8)
             .items_center()
             .rounded(7)
             .border_1()
             .border_color(t.accent)
             .bg(t.popover)
-            .child(svg("mods/workspace-chrome/search.svg").size(14).text_color(t.dim))
+            .child(svg(SEARCH_ICON).size(14).text_color(t.dim))
             .child(Input.new(this.filter).flex_1().h_full().text_size(12.5).text_color(t.foreground)),
         ),
       )
       .child(
         f.pending
-          ? h_flex().gap(8).items_center().px(10).py(6).text_size(12.5).text_color(t.dim).child(svg(SPINNER).size(12).text_color(t.working).spin(900)).child(`reading ${this.ed.draft.harness} models…`)
+          ? h_flex().gap(8).items_center().px(10).py(6).text_size(12.5).text_color(t.dim).child(svg(SPINNER).size(12).text_color(t.working).spin(900)).child(`Reading ${ed.draft.harness} models…`)
           : shown.length === 0
-            ? div().px(10).py(6).text_size(12.5).text_color(t.dim).child("nothing matches")
+            ? div().px(10).py(6).text_size(12.5).text_color(t.dim).child("Nothing matches.")
             : this.measured("lo-options", "optionHeight", this.optionStrip.render("lo-options-strip", rows, this.optionHeight ?? 200, ed.option, draw)),
       );
   }
 
   editFooter(t) {
     const ed = this.ed;
+    const f = this.field();
+    const note = f?.note
+      ? { text: f.note, ok: false }
+      : f?.differs
+        ? { text: `global: ${f.global}`, tone: "diff" }
+        : null;
+    const status = ed.status ?? note;
+    const left = status ? [this.statusLine(t, status)] : [];
     if (ed.mode === "pick") {
-      return h_flex()
-        .gap(6)
-        .items_center()
-        .child(this.button(t, "lo-apply", "Enter", "Apply", (cx) => this.applyOption(cx), { primary: true }))
-        .child(this.button(t, "lo-order", "Tab", "Order", (cx) => {
-          ed.sort = nextSort(ed.sort);
-          ed.option = 0;
-          cx.notify();
-        }))
-        .child(div().flex_1())
-        .child(this.button(t, "lo-pick-back", "Esc", ed.query ? "Clear filter" : "Back", (cx) => this.editKey("escape", cx) && cx.notify()));
+      return this.footer(t, left, [
+        this.button(t, "lo-pick-back", "Esc", ed.query ? "Clear filter" : "Back", (cx) => this.editKey("escape", cx) && cx.notify()),
+        this.button(t, "lo-apply", "Enter", "Choose", (cx) => this.applyOption(cx), { primary: true }),
+      ]);
     }
     if (ed.mode === "type") {
-      return h_flex()
-        .gap(6)
-        .items_center()
-        .child(this.button(t, "lo-confirm", "Enter", "Confirm", (cx) => this.commitText(cx), { primary: true }))
-        .child(div().flex_1())
-        .child(this.button(t, "lo-type-back", "Esc", "Cancel", (cx) => this.editKey("escape", cx) && cx.notify()));
+      return this.footer(t, left, [
+        this.button(t, "lo-type-back", "Esc", "Cancel", (cx) => this.editKey("escape", cx) && cx.notify()),
+        this.button(t, "lo-confirm", "Enter", "Set", (cx) => this.commitText(cx), { primary: true }),
+      ]);
     }
-    const f = this.field();
-    return h_flex()
-      .gap(6)
-      .items_center()
-      .flex_wrap()
-      .child(this.button(t, "lo-open", "Enter", "Change", (cx) => this.openField(cx), { enabled: Boolean(f) }))
-      .when(ed.kind !== "project", (el) => el.child(this.button(t, "lo-save-g", "g", "Save global", (cx) => this.save(cx, "global"), { primary: true })))
-      .child(this.button(t, "lo-save-p", "p", ed.kind === "project" ? "Save" : "Save project", (cx) => this.save(cx, "project"), { primary: ed.kind === "project" }))
-      .when(Boolean(f?.differs) && (ed.kind === "global" || ed.kind === "override"), (el) => el.child(this.button(t, "lo-revert", "r", "Revert field", (cx) => this.change(cx, { revert: f.field }))))
-      .child(this.button(t, "lo-test", "t", "Test launch", (cx) => this.test(cx)))
-      .child(div().flex_1())
-      .child(this.button(t, "lo-back", "Esc", ed.discardArmed ? "Discard" : "Back", (cx) => this.back(cx)));
+    const canRevert = Boolean(f?.differs) && (ed.kind === "global" || ed.kind === "override");
+    return this.footer(
+      t,
+      [
+        this.button(t, "lo-back", "Esc", ed.discardArmed ? "Discard changes" : "Back", (cx) => this.back(cx)),
+        ...(status ? [this.statusLine(t, status)] : []),
+      ],
+      [
+        ...(canRevert ? [this.button(t, "lo-revert", "r", "Revert", (cx) => this.change(cx, { revert: f.field }))] : []),
+        this.button(t, "lo-test", "t", "Test", (cx) => this.test(cx)),
+        ed.kind === "project"
+          ? this.button(t, "lo-save-p", "p", "Save", (cx) => this.save(cx, "project"), { primary: true })
+          : this.button(t, "lo-save-p", "p", "Save to project", (cx) => this.save(cx, "project")),
+        ...(ed.kind === "project" ? [] : [this.button(t, "lo-save-g", "g", "Save global", (cx) => this.save(cx, "global"), { primary: true })]),
+      ],
+    );
   }
+
+  // -- harnesses --
 
   detectPage(t) {
     const rows = (this.registry?.detection ?? []).map((d) => ({ d, h: ROW.harness }));
@@ -855,26 +1247,34 @@ export default class Profiles extends View {
       const err = this.catalogErrors[d.id];
       const count = this.catalogCounts[d.id];
       const models = !d.detected ? "" : err ? err.replace(/\s+/g, " ") : count !== undefined ? `${count} models` : "reading models…";
-      return v_flex()
-        .px(10)
-        .py(5)
-        .gap(2)
+      return h_flex()
+        .px(12)
+        .gap(12)
+        .items_center()
+        .border_b(1)
+        .border_color(t.border)
+        .child(div().flex_none().when(!d.detected, (el) => el.opacity(0.4)).child(harnessIcon(t, d.id, 22)))
         .child(
-          h_flex()
-            .gap(10)
-            .items_center()
-            .text_size(13)
-            .child(div().flex_none().w(80).font_semibold().text_color(t.foreground).child(d.id))
-            .child(div().flex_none().w(96).text_color(d.detected ? t.ansi2 : t.blocked).child(d.detected ? "✓ detected" : "✗ not found"))
-            .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(err ? t.blocked : t.muted).child(models)),
+          v_flex()
+            .flex_1()
+            .min_w(0)
+            .gap(2)
+            .child(
+              h_flex()
+                .gap(10)
+                .items_center()
+                .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child(d.id))
+                .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(err ? t.blocked : t.muted).child(models)),
+            )
+            .child(div().truncate().text_size(11.5).text_color(t.dim).child(d.path ?? "not on PATH")),
         )
-        .child(div().pl(90).truncate().text_size(11.5).text_color(t.dim).child(d.path ?? ""));
+        .child(this.pill(t, d.detected ? "installed" : "not found", d.detected ? t.ansi2 : t.blocked));
     };
     return v_flex()
       .flex_1()
       .min_h(0)
-      .gap(8)
-      .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Harnesses on this machine"))
+      .px(20)
+      .py(12)
       .child(this.measured("lo-harness", "harnessHeight", this.harnessStrip.render("lo-harness-strip", rows, this.harnessHeight ?? 300, -1, draw)));
   }
 
@@ -886,10 +1286,10 @@ export default class Profiles extends View {
       page === "edit"
         ? this.editFooter(t)
         : page === "detect"
-          ? h_flex().child(div().flex_1()).child(this.button(t, "lo-detect-back", "Esc", "Back", (cx) => {
+          ? this.footer(t, [], [this.button(t, "lo-detect-back", "Esc", "Back", (cx) => {
               this.page = "list";
               cx.notify();
-            }))
+            })])
           : this.listFooter(t);
     return v_flex()
       .id("herdr-loadout")
@@ -897,22 +1297,10 @@ export default class Profiles extends View {
       .on_key_down((e, cx) => this.key(e, cx))
       .size_full()
       .min_h(0)
-      .p(18)
-      .gap(12)
       .bg(t.popover)
       .text_color(t.foreground)
-      .child(
-        h_flex()
-          .flex_none()
-          .gap(10)
-          .items_center()
-          .child(div().text_size(15).font_semibold().child("Agent Profiles"))
-          .when(this.busy > 0, (el) => el.child(svg(SPINNER).size(13).text_color(t.working).spin(900)))
-          .child(div().flex_1())
-          .child(div().text_size(11).text_color(t.dim).child("herdr-loadout")),
-      )
+      .child(this.header(t))
       .child(body)
-      .when(page === "list" && Boolean(this.message), (el) => el.child(this.statusLine(t, this.message)))
-      .child(div().flex_none().child(footer));
+      .child(footer);
   }
 }
