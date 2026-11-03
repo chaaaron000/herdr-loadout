@@ -130,13 +130,26 @@ export function defaultTemplate(now = new Date()) {
       {
         id: "builder",
         name: "Builder",
+        harness: "omp",
+        model: "ollama-cloud/deepseek-v4.1-flash",
+        effort: "high",
+        cost: "expensive",
+        when_to_use:
+          "Default implementation worker: scoped features, refactoring, bug fixes, design decisions, and difficult bugs. Splits large work across junior workers it runs as team members.",
+        avoid_when: "Pure research, independent review, or narrow edits a junior can handle.",
+        tags: ["implementation", "refactor", "design"],
+      },
+      {
+        id: "junior",
+        name: "Junior",
         harness: "claude",
         model: "deepseek-v4.1",
         effort: "medium",
         cost: "normal",
-        when_to_use: "General implementation, refactoring, and bug fixes. Prefer when the task is already scoped.",
-        avoid_when: "Pure research, trivial edits, or independent review.",
-        tags: ["implementation", "refactor"],
+        when_to_use:
+          "Light implementation that follows existing patterns, and slices of a larger task handed out by a builder.",
+        avoid_when: "Design decisions, difficult bugs, pure research, or independent review.",
+        tags: ["implementation", "light"],
       },
       {
         id: "reviewer",
@@ -159,17 +172,6 @@ export function defaultTemplate(now = new Date()) {
         when_to_use: "Repository exploration, locating relevant files, and impact analysis.",
         avoid_when: "Writing or reviewing code.",
         tags: ["research"],
-      },
-      {
-        id: "heavy",
-        name: "Heavy",
-        harness: "omp",
-        model: "ollama-cloud/deepseek-v4.1-flash",
-        effort: "high",
-        cost: "expensive",
-        when_to_use: "Complex design work and difficult bugs that resist simpler attempts.",
-        avoid_when: "Routine edits or exploratory reading.",
-        tags: ["design"],
       },
     ],
   };

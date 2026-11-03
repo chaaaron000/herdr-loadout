@@ -69,7 +69,7 @@ package.json                 # ink@7, react@19, smol-toml / bin: herdr-loadout
 bin/herdr-loadout.mjs        # CLI 진입점 (node:util parseArgs)
 src/core/paths.mjs           # config/state/plugin root, 프로젝트 파일 탐색
 src/core/store.mjs           # TOML load/save (unknown key 보존), 원자적 쓰기
-src/core/schema.mjs          # Profile 검증, 기본 템플릿(Builder/Reviewer/Scout/Heavy)
+src/core/schema.mjs          # Profile 검증, 기본 템플릿(Builder/Junior/Reviewer/Scout)
 src/core/merge.mjs           # global + project override 병합
 src/core/format.mjs          # list / list --compact / show 렌더러
 src/core/detect.mjs          # 하네스 탐지 (PATHEXT, .exe/.cmd/.ps1)

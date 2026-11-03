@@ -111,7 +111,7 @@ test("bootstrap runs the real CLI from an unrelated cwd", () => {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /builder \| normal \|/);
+    assert.match(result.stdout, /^builder \| /m);
   } finally {
     cleanup(dir);
   }
