@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { buildLaunchArgs, claudeCatalogFromOmp, detectHarnesses, dryRun, effortLevels, EFFORT_LEVELS, listModels, which, NO_CATALOG } from "../src/core/detect.mjs";
-import { applyFieldValue, editableFields } from "../src/tui/app.mjs";
+import { applyFieldValue, editableFields } from "../src/core/editor.mjs";
 import { cleanup, memoryFs, tempDir } from "./helpers.mjs";
 
 /** Run `fn` with an isolated state dir so no cached or machine catalog leaks in. */
@@ -331,4 +331,18 @@ test("dryRun flags an unlaunchable spaced path on Windows when no alternative ex
   assert.equal(check.ok, false);
   assert.match(check.detail, /space/);
   assert.equal(result.ok, false, "an unlaunchable path makes the profile not launchable");
+});
+
+test("under hc a spaced path is launchable and codex runs without its shared daemon", () => {
+  const spaced = win.resolve("C:/Users/x/Author Software/nvm/codex.cmd");
+  const env = { PATH: win.dirname(spaced), PATHEXT: ".CMD" };
+  const fs = memoryFs({ [spaced]: "" });
+  const options = { env, fs, platform: "win32", cache: false, offline: true, host: "hc" };
+  const result = dryRun({ id: "r", harness: "codex", effort: "low" }, options);
+  assert.equal(result.ok, true);
+  assert.ok(!result.checks.some((entry) => entry.label === "launchable path"));
+  assert.deepEqual(result.args, ["-c", "model_reasoning_effort=low", "--no-daemon"]);
+  // the flag is rejected when given twice, so a profile that already sets it keeps one
+  const pinned = dryRun({ id: "r", harness: "codex", extra_args: ["--no-daemon"] }, options);
+  assert.deepEqual(pinned.args, ["--no-daemon"]);
 });

@@ -24,7 +24,7 @@ Profile Registry（本插件）
 ## 要求
 
 - **Node.js ≥ 22**（插件命令与 CLI 均以 Node 运行）
-- Herdr ≥ 0.7.0
+- Herdr ≥ 0.7.0（TUI）。在 Herdr 桌面应用（herdr-core `hc`）中 CLI 与技能同样可用 — 参见 [在 Herdr 应用中使用](#在-herdr-应用中使用)
 - `npm`（通过 GitHub 安装时会执行依赖安装步骤 `npm ci --omit=dev`）
 
 ## 安装
@@ -71,6 +71,20 @@ herdr plugin action invoke herdr-loadout.open-ui-popup
 ```
 
 如果注册了快捷键，也可以用该按键打开。
+
+在 Herdr 应用中使用应用专用编辑器（应用 mod）。从源码检出中安装一次：
+
+```bash
+npm run install:app-mod                         # 安装到 ~/.config/herdr-app/mods/herdr-loadout
+npm run install:app-mod -- --key ctrl-shift-a   # 同时注册快捷键（按键已被占用则拒绝）
+herdr-app do mod.open --name herdr-loadout      # 不用快捷键直接打开
+```
+
+- 以当前聚焦终端的项目为基准显示全局/项目 profile，按键和操作与 TUI 相同
+  （`Enter` 编辑、`a` 添加、`c` 复制、`d` 删除、`r` 解除 override、`j` harness 列表、编辑中 `g`/`p` 保存、`t` 运行检查、`Esc` 返回/关闭）。也可以用鼠标点击。
+- 所有读写都经由 `herdr-loadout editor <action>`（CLI 的 JSON 后端），因此规则与 TUI 相同。
+- 应用 mod 无法使用 Node，所以安装脚本会把 node 和 CLI 的路径写入 `cli.js`。移动检出目录后需重新安装。
+- 应用的命令面板（Ctrl+Shift+P）不接受 mod 条目，因此请用快捷键或 `mod.open` 打开。
 
 ### 注册快捷键（可选）
 
@@ -197,10 +211,10 @@ node bin/herdr-loadout.mjs list --compact
 `list --compact` 是无表头、无颜色、无装饰的固定格式。编排器的解析器依赖它。
 
 ```text
-builder | normal | implementation/refactor
+builder | expensive | implementation/refactor/design
+junior | normal | implementation/light
 reviewer | cheap | review
 scout | cheap | research
-heavy | expensive | design
 ```
 
 ### 3. 配置文件
@@ -316,11 +330,44 @@ herdr plugin action invoke herdr-loadout.add-profile
 
 | 技能 | 用途 |
 |---|---|
-| `herdr-loadout` | 通过 profile 把任务委派给 worker（查询 → `launch --json` → `herdr agent start`） |
-| `herdr-loadout-edit` | 添加、修改、删除、导入 profile |
+| `herdr-loadout` | 通过 profile 把任务委派给 worker（读取工作方式 → 查询 → `launch --json` → `herdr agent start` 或 `hc run`） |
+| `herdr-loadout-edit` | 添加、修改、删除、导入 profile 与工作方式 |
 
-`launch <id> --json` 返回 `ok`、`harness` 和 `args`。把 `args` 原样接在
-`herdr agent start <name> --kind <harness> --` 之后即可。
+`launch <id> --json` 返回 `ok`、`harness`、`args`、`env` 和 `argv`。在 TUI 中，把 `args` 原样接在
+`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>` 之后，
+`env` 的每一项在创建 pane 时用 `herdr pane split --env 'KEY=VALUE'` 传入。
+
+### 工作方式（workflow）
+
+技能里只有命令，委派时的选择写在工作方式文件中：哪类 profile 负责哪种工作，
+提示词、brief、报告文件的格式，标签页的用法，何时关闭 worker、何时保留，以及 worker 之间如何协作。
+与 profile 一样分为两层。
+
+| 层 | 文件 | 用途 |
+|---|---|---|
+| 全局 | `<配置目录>/workflow.md`（不存在时使用内置默认值） | 所有项目通用 |
+| 项目 | `<project>/.herdr/workflow.md` | 仅限本项目的规则。接在全局之后，冲突时以此为准 |
+
+```bash
+herdr-loadout workflow                      # 适用于本项目的工作方式（技能在委派前读取）
+herdr-loadout workflow init --project .     # 创建项目规则文件（只写不同之处）
+herdr-loadout workflow init                 # 把内置默认值复制到全局文件后修改
+```
+
+创建全局文件后它就属于用户，内置默认值之后的变化不会再反映进来。
+`herdr-loadout path` 中的 `globalWorkflow`、`projectWorkflow` 即两个文件的位置。
+
+### 在 Herdr 应用中使用
+
+技能在 `HERDR_ENV=1` 时判定为 TUI（`herdr`），存在 `HC_TERMINAL_ID` 时判定为应用（`hc`、`herdr-app`），
+并使用对应的 CLI。在应用中使用 `launch <id> --json --host hc`。
+
+- `argv` 即完整的 worker 命令：`hc run --bg --name <name> --cwd <dir> --label herdr.space=<space> -- <argv...>`。
+- `hc run` 无法传递环境变量，因此带有 `env` 的 profile 的 `argv` 会经由
+  `herdr-loadout exec <id>`。`exec` 应用 env 后启动 harness，并原样返回其退出码。
+- Codex 在 `hc` 下需要 `--no-daemon`，因此 `--host hc` 时会自动加上。
+- 应用中没有插件 action。如果没有 launcher，请在源码 checkout 中运行 `node scripts/setup-shim.mjs` 创建。
+
 技能文件会被复制到技能库，因此换行符固定为 LF（`.gitattributes`）。
 
 ## Profile 字段

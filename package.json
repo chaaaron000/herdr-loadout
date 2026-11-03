@@ -14,6 +14,7 @@
   "scripts": {
     "test": "node --test",
     "ui": "node bin/ui.mjs",
+    "install:app-mod": "node scripts/install-app-mod.mjs",
     "check:privacy": "node scripts/check-privacy.mjs",
     "setup:hooks": "git config core.hooksPath .githooks"
   },

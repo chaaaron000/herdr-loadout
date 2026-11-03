@@ -1,6 +1,6 @@
 ---
 name: herdr-loadout-edit
-description: "Create or change agent profiles in the herdr-loadout registry: add a role, change which harness/model/effort a role uses, set a project-specific override, or import a set of profiles. Use when the user asks to add, edit, tune, or remove a profile, or when delegation failed because no suitable profile exists."
+description: "Create or change agent profiles in the herdr-loadout registry: add a role, change which harness/model/effort a role uses, set a project-specific override, or import a set of profiles. Also changes the delegation workflow (routing, briefs, tabs, when workers close). Use when the user asks to add, edit, tune, or remove a profile or a workflow rule, or when delegation failed because no suitable profile exists."
 ---
 
 # Herdr Loadout — edit agent profiles
@@ -9,7 +9,7 @@ Profiles live in a TOML registry. Two layers:
 
 | Layer | Path | Purpose |
 |---|---|---|
-| global | `<HERDR_PLUGIN_CONFIG_DIR>/loadout.toml` | shared across every project |
+| global | `<HERDR_PLUGIN_CONFIG_DIR>/loadout.toml`; in the app, the same file at its default location (`$LOADOUT path`) | shared across every project |
 | project | `<project>/.herdr/loadout.toml` | only the fields that differ, for this project |
 
 `$LOADOUT` is the CLI resolved in the `herdr-loadout` skill ("Resolve the CLI once"). Resolve the paths instead of guessing:
@@ -181,12 +181,40 @@ does not mean the model name is real.
 
 Report the profile id and the file it landed in.
 
+## Change the workflow
+
+The workflow is the set of choices orchestrators follow when they delegate: routing, how prompts,
+briefs, and reports look, how tabs are used, when a worker is closed or kept, and how workers
+coordinate. It is Markdown, in two layers:
+
+| Layer | Path | Purpose |
+|---|---|---|
+| global | `<config dir>/workflow.md` (`globalWorkflow` in `$LOADOUT path`); the built-in default until it exists | shared across every project |
+| project | `<project>/.herdr/workflow.md` (`projectWorkflow`) | rules for this project only, read after the global ones; they win where the two conflict |
+
+- **A rule for one project:** `$LOADOUT workflow init --project .` creates the project file with a
+  short header. Write only what differs from the global workflow.
+- **A rule for every project:** `$LOADOUT workflow init` copies the built-in default to the global
+  file; edit that copy. From then on it is the user's, and later changes to the built-in default do
+  not reach it.
+
+Put the rule where the user said it applies; when they did not say, ask. After a change,
+`$LOADOUT workflow` prints exactly what orchestrators will read; report the file you changed.
+
 ## Editing the TOML by hand
 
-The file is meant to be hand-edited; unknown keys survive every save. The interactive editor is:
+The file is meant to be hand-edited; unknown keys survive every save. The interactive editor is for
+a person; open it with the command for your host (see "Know your host" in the `herdr-loadout`
+skill):
 
 ```bash
+# TUI: a plugin pane beside you
 herdr plugin pane open --plugin herdr-loadout --entrypoint ui
+# App: the Agent Profiles window (installed with `npm run install:app-mod` in the checkout)
+herdr-app do mod.open --name herdr-loadout
 ```
 
-Prefer the CLI for anything scripted — the TUI needs a person at the keyboard.
+In the app, the same command closes the window when it is already open. When `herdr-app status`
+shows no `herdr-loadout` overlay afterwards, the mod is not installed; tell the user how to install it.
+
+Prefer the CLI for anything scripted — the editor needs a person at the keyboard.

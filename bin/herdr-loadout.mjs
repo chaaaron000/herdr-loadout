@@ -5,6 +5,7 @@
  * Contract: `list --compact` prints one `id | cost | purpose` line per profile
  * with no decoration, so an orchestrator can read it cheaply.
  */
+import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
@@ -18,7 +19,7 @@ import {
   sourceRoot,
   stateDir,
 } from "../src/core/paths.mjs";
-import { detectHarnesses, dryRun, effortLevels, listModels, withModelEffort } from "../src/core/detect.mjs";
+import { detectHarnesses, dryRun, effortLevels, HOSTS, listModels, resolveSpawn, withModelEffort } from "../src/core/detect.mjs";
 import {
   ensureGlobalConfig,
   loadConfig,
@@ -31,6 +32,7 @@ import { mergeProfileInput, normalizePayload, profileFromFlags, readProfilePaylo
 import { parse as parseToml } from "smol-toml";
 import fs from "node:fs";
 import { validatePermissions } from "../src/core/permissions.mjs";
+import { initWorkflow, loadWorkflow, renderWorkflow } from "../src/core/workflow.mjs";
 
 const EXIT_OK = 0;
 const EXIT_ERROR = 1;
@@ -45,8 +47,12 @@ Usage:
   herdr-loadout validate [--json]
   herdr-loadout detect [--json] [--refresh]
   herdr-loadout catalog [--refresh] [--provider ID] [--json]   # models.dev snapshot
-  herdr-loadout launch <id> [--dry-run] [--project PATH]
-  herdr-loadout ui [--placement split|popup|overlay]
+  herdr-loadout launch <id> [--json] [--host herdr|hc] [--project PATH]
+  herdr-loadout exec <id> [--host herdr|hc] [--project PATH]   run the harness here
+  herdr-loadout ui [--placement split|popup|overlay] [--project PATH]
+  herdr-loadout editor <action> [--input JSON] [--project PATH]   Herdr app editor backend (JSON)
+  herdr-loadout workflow [--json] [--project PATH]   the delegation workflow for this project
+  herdr-loadout workflow init [--project PATH]       create the global (or project) file to edit
 
 Write:
   herdr-loadout add [--id ID] [--name NAME] [--harness H] [--model M]
@@ -89,6 +95,10 @@ Options:
   --permission-mode  Claude / OMP / OpenCode permission mode (empty = inherit)
     Claude: manual | acceptEdits | auto | dontAsk | plan | bypassPermissions
     OMP: always-ask | write | yolo; OpenCode: ask | allow | deny
+  --host      where the worker runs: herdr (TUI, default) or hc (Herdr app).
+              launch --json adds \`argv\`, the whole command for \`hc run --\`; it goes
+              through \`exec\` when the profile sets environment variables, which
+              \`hc run\` cannot pass.
   -h, --help  show this message
 `;
 
@@ -163,6 +173,7 @@ function cmdShow(id, options) {
 
 function cmdPath(options) {
   const { loaded } = loadMerged(options);
+  const workflow = loadWorkflow({ projectRoot: options.project ?? process.cwd() });
   printJson({
     pluginRoot: sourceRoot(),
     configDir: configDir(),
@@ -170,7 +181,27 @@ function cmdPath(options) {
     globalConfig: loaded.globalPath,
     projectConfig: options.project ? projectConfigPath(options.project) : loaded.projectPath,
     discoveredProjectConfig: loaded.projectPath,
+    globalWorkflow: workflow.global.path,
+    projectWorkflow: workflow.project.path,
   });
+}
+
+/**
+ * The delegation workflow: the global one (or the built-in default), then this
+ * project's rules. `init` creates a file to edit instead.
+ */
+function cmdWorkflow(sub, options) {
+  const projectRoot = options.project ?? process.cwd();
+  if (sub === "init") {
+    const result = initWorkflow({ scope: options.project ? "project" : "global", projectRoot });
+    if (!result.ok) fail(result.error);
+    process.stdout.write(`created ${result.path}\n`);
+    return;
+  }
+  if (sub !== undefined) fail(`unknown workflow command: ${sub}`, EXIT_USAGE);
+  const workflow = loadWorkflow({ projectRoot });
+  if (options.json) return printJson(workflow);
+  process.stdout.write(renderWorkflow(workflow));
 }
 
 function cmdValidate(options) {
@@ -275,21 +306,68 @@ async function cmdCatalog(options) {
   }
 }
 
+/** The whole worker command for `hc run --`, which has no way to set environment variables. */
+function launchArgv(result, id, projectRoot) {
+  if (!result.executable) return null;
+  if (Object.keys(result.env).length === 0) return [result.executable, ...result.args];
+  const bin = path.join(sourceRoot(), "bin", "herdr-loadout.mjs");
+  return [process.execPath, bin, "exec", id, "--host", result.host, "--project", projectRoot];
+}
+
 function cmdLaunch(id, options) {
-  const { byId } = loadMerged(options);
+  const { byId, projectRoot } = loadMerged(options);
   const profile = byId.get(id);
   if (!profile) fail(`profile "${id}" not found`);
-  const result = dryRun(profile, { refresh: options.refresh });
-  if (options.json) return printJson(result);
+  const result = dryRun(profile, { refresh: options.refresh, host: options.host });
+  if (options.json) return printJson({ ...result, argv: launchArgv(result, id, projectRoot) });
   const lines = result.checks.map((check) => `${check.ok ? "✓" : "✗"} ${check.label}: ${check.detail}`);
   process.stdout.write(`${lines.join("\n")}\n`);
   process.stdout.write(result.ok ? "✓ profile launchable (dry-run)\n" : "✗ profile is not launchable\n");
   if (!result.ok) process.exit(EXIT_ERROR);
 }
 
+/** Start the profile's harness in this terminal with its args and environment. */
+function cmdExec(id, options) {
+  const { byId } = loadMerged(options);
+  const profile = byId.get(id);
+  if (!profile) fail(`profile "${id}" not found`);
+  const result = dryRun(profile, { host: options.host });
+  if (!result.ok) {
+    const failed = result.checks.filter((check) => !check.ok).map((check) => `✗ ${check.label}: ${check.detail}`);
+    fail(`profile "${id}" is not launchable\n${failed.join("\n")}`);
+  }
+  const env = { ...process.env, ...result.env };
+  const { file, argv } = resolveSpawn(result.executable, result.args, { env });
+  const child = spawn(file, argv, { stdio: "inherit", env });
+  // The terminal delivers Ctrl+C to the harness itself; the wrapper must outlive
+  // it, or the terminal would end while the harness keeps running.
+  for (const signal of ["SIGINT", "SIGBREAK"]) process.on(signal, () => {});
+  for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+  child.on("error", (error) => fail(`could not start ${result.executable}: ${error.message}`));
+  child.on("exit", (code) => process.exit(code ?? EXIT_ERROR));
+}
+
 function cmdUi(options) {
   // Kept in a separate module so the CLI never imports Ink unless asked.
-  return import("../src/tui/app.mjs").then(({ runTui }) => runTui(options));
+  const argv = [];
+  if (options.placement) argv.push("--placement", options.placement);
+  if (options.project) argv.push("--project", options.project);
+  return import("./ui.mjs").then(({ main: runUi }) => runUi(argv));
+}
+
+/**
+ * The Herdr app editor's backend: one JSON request in (`--input`), one JSON
+ * answer out. See `runEditorAction` for the actions.
+ */
+async function cmdEditor(action, options) {
+  let input = {};
+  try {
+    input = options.input ? JSON.parse(options.input) : {};
+  } catch (error) {
+    return printJson({ ok: false, error: `--input is not JSON: ${error.message}` });
+  }
+  const { runEditorAction } = await import("../src/core/editor.mjs");
+  printJson(await runEditorAction(action, input, { projectRoot: options.project ?? process.cwd() }));
 }
 
 /**
@@ -620,6 +698,8 @@ async function main(argv) {
         force: { type: "boolean" },
         project: { type: "string" },
         placement: { type: "string" },
+        host: { type: "string" },
+        input: { type: "string" },
         from: { type: "string" },
         id: { type: "string" },
         name: { type: "string" },
@@ -664,6 +744,9 @@ async function main(argv) {
 
   const command = usePositionals[0];
   const options = { ...values, project: values.project ? path.resolve(values.project) : undefined };
+  if (options.host !== undefined && !HOSTS.includes(options.host)) {
+    fail(`--host must be one of: ${HOSTS.join(", ")}`, EXIT_USAGE);
+  }
 
   switch (command) {
     case "list":
@@ -685,6 +768,18 @@ async function main(argv) {
       const id = usePositionals[1];
       if (!id) fail("usage: herdr-loadout launch <id>", EXIT_USAGE);
       return cmdLaunch(id, options);
+    }
+    case "exec": {
+      const id = usePositionals[1];
+      if (!id) fail("usage: herdr-loadout exec <id>", EXIT_USAGE);
+      return cmdExec(id, options);
+    }
+    case "workflow":
+      return cmdWorkflow(usePositionals[1], options);
+    case "editor": {
+      const action = usePositionals[1];
+      if (!action) fail("usage: herdr-loadout editor <action> [--input JSON]", EXIT_USAGE);
+      return cmdEditor(action, options);
     }
     case "ui":
       return cmdUi(options);

@@ -10,7 +10,7 @@ import { profileFromFlags, mergeProfileInput } from "../src/core/input.mjs";
 import { renderShow } from "../src/core/format.mjs";
 import { mergeProfiles, overrideDelta } from "../src/core/merge.mjs";
 import { upsertProfile, readConfigFile } from "../src/core/store.mjs";
-import { editableFields, applyFieldValue, fieldOptions } from "../src/tui/app.mjs";
+import { editableFields, applyFieldValue, fieldOptions } from "../src/core/editor.mjs";
 import { cleanup, memoryFs, tempDir } from "./helpers.mjs";
 
 const base = { id: "builder", name: "Builder", harness: "codex", model: "test-model", effort: "high", when_to_use: "Implement changes." };

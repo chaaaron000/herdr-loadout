@@ -25,7 +25,7 @@ task DAGs, and scheduling stay with Herdr and the Herdr skill.
 ## Requirements
 
 - **Node.js ≥ 22** (plugin commands and the CLI run on Node)
-- Herdr ≥ 0.7.0
+- Herdr ≥ 0.7.0 (TUI). The CLI and skills also work in the Herdr desktop app (herdr-core `hc`) — see [Using it in the Herdr app](#using-it-in-the-herdr-app)
 - `npm` (a GitHub install runs `npm ci --omit=dev` as its build step)
 
 ## Install
@@ -73,6 +73,20 @@ herdr plugin action invoke herdr-loadout.open-ui-popup
 ```
 
 If you registered a keybinding, you can open it with that key as well.
+
+In the Herdr app, use the app-only editor (an app mod). Install it once from a source checkout:
+
+```bash
+npm run install:app-mod                         # installs to ~/.config/herdr-app/mods/herdr-loadout
+npm run install:app-mod -- --key ctrl-shift-a   # also registers a keybinding (refused if the key is already in use)
+herdr-app do mod.open --name herdr-loadout      # open without a keybinding
+```
+
+- It shows global/project profiles for the project of the focused terminal, with the same keys and actions as the TUI
+  (`Enter` edit, `a` add, `c` copy, `d` delete, `r` clear override, `j` harness list, `g`/`p` save while editing, `t` run check, `Esc` back/close). You can also click with the mouse.
+- Every read and write goes through `herdr-loadout editor <action>` (the CLI's JSON backend), so the rules are the same as the TUI.
+- App mods cannot use Node, so the install script writes the paths to node and the CLI into `cli.js`. Reinstall if you move the checkout.
+- The app's command palette (Ctrl+Shift+P) does not accept mod entries, so open it with the keybinding or `mod.open`.
 
 ### Registering a keybinding (optional)
 
@@ -202,10 +216,10 @@ node bin/herdr-loadout.mjs list --compact
 Orchestrator parsers depend on it.
 
 ```text
-builder | normal | implementation/refactor
+builder | expensive | implementation/refactor/design
+junior | normal | implementation/light
 reviewer | cheap | review
 scout | cheap | research
-heavy | expensive | design
 ```
 
 ### 3. Config files
@@ -322,12 +336,45 @@ herdr plugin action invoke herdr-loadout.add-profile
 
 | Skill | Purpose |
 |---|---|
-| `herdr-loadout` | Delegate work to a worker through a profile (look up → `launch --json` → `herdr agent start`) |
-| `herdr-loadout-edit` | Add, change, remove, or import profiles |
+| `herdr-loadout` | Delegate work to a worker through a profile (read the workflow → look up → `launch --json` → `herdr agent start` or `hc run`) |
+| `herdr-loadout-edit` | Add, change, remove, or import profiles and the workflow |
 
-`launch <id> --json` returns `ok`, `harness`, and `args`. Append `args` unchanged after
-`herdr agent start <name> --kind <harness> --`. Skill files are copied into a skills library,
-so their line endings are pinned to LF (`.gitattributes`).
+`launch <id> --json` returns `ok`, `harness`, `args`, `env`, and `argv`. In the TUI, append `args` unchanged after
+`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>`, and pass each `env`
+entry with `herdr pane split --env 'KEY=VALUE'` when creating the pane.
+
+### Workflow
+
+The skills hold only the commands; the choices made when delegating live in the workflow file: which profile family gets which kind of work,
+the prompt, brief, and report file formats, how to use tabs, when to close a worker and when to keep it, and how workers collaborate.
+Like profiles, it has two layers.
+
+| Layer | File | Purpose |
+|---|---|---|
+| Global | `<config dir>/workflow.md` (built-in default if absent) | Shared by every project |
+| Project | `<project>/.herdr/workflow.md` | Rules for this project only. Appended after the global file; where they conflict, this one wins |
+
+```bash
+herdr-loadout workflow                      # workflow that applies to this project (the skill reads it before delegating)
+herdr-loadout workflow init --project .     # create the project rules file (write only what differs)
+herdr-loadout workflow init                 # copy the built-in default to the global file to edit it
+```
+
+Once you create the global file it is your file, so later changes to the built-in default are not picked up.
+`globalWorkflow` and `projectWorkflow` in `herdr-loadout path` are the two file locations.
+
+### Using it in the Herdr app
+
+The skills treat `HERDR_ENV=1` as the TUI (`herdr`) and the presence of `HC_TERMINAL_ID` as the app (`hc`, `herdr-app`),
+and use the matching CLI. In the app, use `launch <id> --json --host hc`.
+
+- `argv` is the full worker command: `hc run --bg --name <name> --cwd <dir> --label herdr.space=<space> -- <argv...>`.
+- `hc run` cannot pass environment variables, so for a profile with `env` the `argv` goes through
+  `herdr-loadout exec <id>`. `exec` applies the env, starts the harness, and returns its exit code unchanged.
+- Codex needs `--no-daemon` under `hc`, so it is added automatically with `--host hc`.
+- The app has no plugin actions. If the launcher is missing, create it from a source checkout with `node scripts/setup-shim.mjs`.
+
+Skill files are copied into a skills library, so their line endings are pinned to LF (`.gitattributes`).
 
 ## Profile fields
 

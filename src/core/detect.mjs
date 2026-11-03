@@ -127,7 +127,7 @@ function writeCache(id, env, models) {
  * `.ps1` scripts cannot be spawned directly, so route them through their
  * interpreter with argument arrays (no shell string interpolation).
  */
-function resolveSpawn(executablePath, args, options) {
+export function resolveSpawn(executablePath, args, options) {
   const env = options.env ?? process.env;
   const timeout = options.timeoutMs ?? 15000;
   const lower = String(executablePath).toLowerCase();
@@ -524,6 +524,26 @@ export async function listModelsAsync(harness, options = {}) {
   return catalogFromOutput(harness, catalog, result, cache.write, env);
 }
 
+/**
+ * The catalog `listModelsAsync` would answer without running a harness CLI, or
+ * null when only a CLI run can tell. An editor that cannot wait shows this, then
+ * asks `listModelsAsync` for the rest.
+ */
+export function cachedModels(harness, options = {}) {
+  const env = options.env ?? process.env;
+  if (harness === "claude") {
+    const cached = readCache(harness, env);
+    if (cached) return { ok: true, models: cached.models, cached: true };
+    const fromModelsDev = claudeCatalogFromModelsDev(options);
+    return fromModelsDev ? { ok: true, models: fromModelsDev, derived: "models.dev" } : null;
+  }
+  const fixed = STATIC_CATALOGS[harness];
+  if (fixed) return { ok: true, models: fixed, static: true };
+  if (!CATALOGS[harness]) return { ok: true, models: [], error: `no catalog for harness "${harness}"`, noCatalog: true };
+  const cached = readCache(harness, env);
+  return cached ? { ok: true, models: cached.models, cached: true } : null;
+}
+
 /** Effort levels for a harness, preferring the live catalog when it reports any. */
 export function effortLevels(harness, options = {}) {
   const fixed = STATIC_EFFORT[harness];
@@ -538,16 +558,19 @@ export function effortLevels(harness, options = {}) {
   return EFFORT_LEVELS[harness] ?? [];
 }
 
+/** Where the worker runs: the herdr TUI multiplexer, or herdr-core (`hc`) behind the Herdr app. */
+export const HOSTS = ["herdr", "hc"];
+
 /**
  * Build the argv for launching a harness with a profile's settings.
  * Pure function: no process is started here.
  *
  * Flags must be ones the *interactive* form accepts, because that is what
- * `herdr agent start` launches. For example opencode exposes `--variant` on
+ * `herdr agent start` and `hc run` launch. For example opencode exposes `--variant` on
  * `opencode run` only; passing it to the interactive TUI makes it print help
  * and exit, so the effort is carried through config instead.
  */
-export function buildLaunchArgs(profile) {
+export function buildLaunchArgs(profile, options = {}) {
   const harness = profile.harness ?? "custom";
   const args = [];
   const effort = profile.effort;
@@ -555,6 +578,9 @@ export function buildLaunchArgs(profile) {
     case "codex": {
       if (profile.model) args.push("-m", profile.model);
       if (effort) args.push("-c", `model_reasoning_effort=${effort}`);
+      // Under hc, Codex's shared app-server daemon would run its commands
+      // outside the hc terminal; clap rejects the flag given twice.
+      if (options.host === "hc" && !profile.extra_args?.includes("--no-daemon")) args.push("--no-daemon");
       break;
     }
     case "claude": {
@@ -608,6 +634,7 @@ function modeArgs(harness, mode) {
  * @returns {{ok: boolean, checks: Array<{label: string, ok: boolean, detail?: string}>}}
  */
 export function dryRun(profile, options = {}) {
+  const host = options.host ?? "herdr";
   const checks = [];
   const permissionErrors = validatePermissions(profile);
   let env = {};
@@ -635,7 +662,8 @@ export function dryRun(profile, options = {}) {
 
   // A path with a space cannot be launched by Herdr on Windows, so surface it
   // here rather than letting the worker fail after a 30-second startup wait.
-  if (executablePath && String(executablePath).includes(" ") && (options.platform ?? process.platform) === "win32") {
+  // hc starts the argv directly, so the space is harmless there.
+  if (host === "herdr" && executablePath && String(executablePath).includes(" ") && (options.platform ?? process.platform) === "win32") {
     const alternative = which(harness, { ...options, preferNoSpaces: true });
     checks.push({
       label: "launchable path",
@@ -689,7 +717,7 @@ export function dryRun(profile, options = {}) {
     });
   }
 
-  const args = buildLaunchArgs(profile);
+  const args = buildLaunchArgs(profile, { host });
   checks.push({
     label: "launch command",
     ok: Boolean(executablePath),
@@ -699,8 +727,10 @@ export function dryRun(profile, options = {}) {
   return {
     ok: checks.every((check) => check.ok),
     checks,
-    // Machine-usable launch description: a caller appends these to
-    // `herdr agent start <name> --kind <harness> --pane <id> --`.
+    // Machine-usable launch description: under herdr a caller appends these to
+    // `herdr agent start <name> --kind <harness> --pane <id> --`; under hc the
+    // CLI turns them into one argv for `hc run --`.
+    host,
     harness,
     model: profile.model ?? null,
     effort: profile.effort ?? null,

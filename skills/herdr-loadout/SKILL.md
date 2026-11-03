@@ -1,18 +1,44 @@
 ---
 name: herdr-loadout
-description: "Delegate work to Herdr workers using named agent profiles. Use when a task should be handed to another agent in a Herdr pane — parallel implementation, independent review, or repository exploration — and the role, harness, model, or effort level matters. Requires HERDR_ENV=1 and the herdr-loadout plugin."
+description: "Delegate work to Herdr workers using named agent profiles. Use when a task should be handed to another agent in a Herdr pane — parallel implementation, independent review, or repository exploration — and the role, harness, model, or effort level matters. Works in the Herdr TUI (HERDR_ENV=1, `herdr` CLI) and the Herdr app (HC_TERMINAL_ID set, `hc` CLI)."
 ---
 
 # Herdr Loadout — orchestrate work with agent profiles
 
 A **profile** names a role and pins the harness, model, and effort a worker runs with.
-The registry is the policy layer; Herdr skill commands are the execution layer.
+The registry is the policy layer; the host's CLI is the execution layer.
 
 ```text
 herdr-loadout list --compact   →  who is available
 herdr-loadout show <id>        →  exactly how they run
-herdr agent start …            →  how the worker launches
+herdr agent start … / hc run … →  how the worker launches
 ```
+
+## Know your host
+
+Herdr comes in two forms, each with its own CLI. Decide once, at the start of the session:
+
+| Host | Test | Execution CLI | Layout CLI |
+|---|---|---|---|
+| **TUI** (the `herdr` terminal multiplexer) | `HERDR_ENV=1` | `herdr` | `herdr` |
+| **App** (the Herdr desktop app, terminals in herdr-core) | `HC_TERMINAL_ID` is set | `hc` | `herdr-app` |
+
+```bash
+if [ "${HERDR_ENV:-}" = 1 ]; then LOADOUT_HOST=herdr; elif [ -n "${HC_TERMINAL_ID:-}" ]; then LOADOUT_HOST=hc; fi
+```
+
+```powershell
+$LOADOUT_HOST = if ($env:HERDR_ENV -eq '1') { 'herdr' } elseif ($env:HC_TERMINAL_ID) { 'hc' }
+```
+
+Check `HERDR_ENV` first. An hc terminal never inherits its caller's environment, so it never carries
+`HERDR_ENV`. A TUI pane, however, can carry `HC_TERMINAL_ID` from the app terminal that started the
+herdr server, and that address is not yours. When neither is set you are not inside Herdr: do not
+start workers; tell the user.
+
+Use only your host's commands. The TUI and the app are separate servers: a `herdr` command run from
+the app opens panes in the TUI's window instead of beside you, and `hc` run from the TUI starts
+terminals the TUI cannot show. Steps below mark host-specific commands with **TUI** and **App**.
 
 ## Resolve the CLI once
 
@@ -24,31 +50,52 @@ itself runs, never in an agent's shell, so do not rely on it.
 # 1. on PATH
 herdr-loadout list --compact
 
-# 2. the launcher in the plugin config dir; needs no PATH (POSIX sh / Git Bash)
+# 2. TUI: the launcher in the plugin config dir; needs no PATH (POSIX sh / Git Bash)
 LOADOUT="$(herdr plugin config-dir herdr-loadout)/herdr-loadout"
+# 2. App: the same launcher at its default location (there is no `herdr plugin` command)
+LOADOUT="${APPDATA:-${XDG_CONFIG_HOME:-$HOME/.config}}/herdr/plugins/config/herdr-loadout/herdr-loadout"
 "$LOADOUT" list --compact
 ```
 
 ```powershell
-# 2. same thing in PowerShell
+# 2. TUI, PowerShell
 $LOADOUT = Join-Path (herdr plugin config-dir herdr-loadout) 'herdr-loadout.cmd'
+# 2. App, PowerShell
+$LOADOUT = Join-Path $env:APPDATA 'herdr\plugins\config\herdr-loadout\herdr-loadout.cmd'
 & $LOADOUT list --compact
 ```
 
 On Windows, `bash` may resolve to WSL, which sees neither `herdr` nor the Windows `node`. When the
 POSIX form fails that way, use the PowerShell form.
 
-If form 2 says the file does not exist, create the launchers once and retry:
+If form 2 says the file does not exist, create the launchers once and retry. TUI:
 
 ```bash
 herdr plugin action invoke herdr-loadout.install-shim
 ```
+
+App: the app has no plugin actions. Run `node <checkout>/scripts/setup-shim.mjs` when you know where
+the herdr-loadout checkout is; otherwise ask the user to run it.
 
 If the launcher reports that the plugin is missing from its install path, run the same command again;
 the plugin was reinstalled somewhere else.
 
 An empty roster is a real answer: no profiles exist yet. Point the user at the `herdr-loadout-edit`
 skill rather than inventing a profile.
+
+## Read the workflow
+
+The workflow holds the choices this skill leaves open: which profile class takes which work, how a
+prompt, brief, and report look, how tabs are used, when a worker is closed or kept, and how workers
+coordinate. It is the global workflow followed by this project's rules, which win where the two
+conflict. Read it once per session, before the first delegation:
+
+```bash
+$LOADOUT workflow
+```
+
+Every step below that says "as the workflow says" follows it. The user edits it, not you; the
+`herdr-loadout-edit` skill covers changing it.
 
 ## Delegate
 
@@ -60,188 +107,168 @@ skill rather than inventing a profile.
 
    Each line is `id | cost | purpose`. The purpose is the routing signal; cost is the tiebreaker.
 
-2. **Pick by description, not by name.** Read the full description of the candidates that plausibly fit:
+2. **Pick by description, not by name,** routing as the workflow says. Read the full description of
+   the candidates that plausibly fit:
 
    ```bash
    $LOADOUT show <id>
    ```
 
    Match the task against `When to use`, and reject a candidate whose `Avoid when` describes your task.
-   When several profiles fit equally, take the cheapest.
 
 3. **Get the launch arguments** right before every launch. Never transcribe model names or effort
    levels by hand:
 
    ```bash
-   $LOADOUT launch <id> --json
+   $LOADOUT launch <id> --json --host $LOADOUT_HOST
    ```
 
-   The response carries `harness`, `args`, `env`, and `ok`. Continue only when `ok` is true.
+   The response carries `harness`, `args`, `env`, `argv`, and `ok`. Continue only when `ok` is true.
    `args` includes the profile's permission flags. `env` includes its environment overrides
-   and, for OpenCode, generated runtime permissions.
+   and, for OpenCode, generated runtime permissions. `--host hc` adds what the app needs (Codex's
+   `--no-daemon`), and `argv` is the whole worker command for `hc run`: the harness and its `args`,
+   or `herdr-loadout exec <id>` when the profile sets `env`, because `hc run` cannot pass
+   environment variables.
 
    Users change profiles between sessions. In briefs, handoff notes, and long-term memory, record
    only the profile id, never its harness, model, or effort. When a note and the profile disagree,
    the profile wins.
 
-4. **Open the worker pane** in the tab for its kind of work (see [Tabs and layout](#tabs-and-layout)).
-   For every entry in `env`, add one `--env KEY=VALUE` argument. Pass each pair as one
-   shell-quoted argument; OpenCode's inline JSON must remain intact. Pass `--cwd` as an absolute
-   path: a relative one resolves against the Herdr server's directory, not yours.
+4. **Start the worker** in the tab the workflow gives it (see [Tab commands](#tab-commands)).
+   Name it in lowercase letters, digits, `-` and `_`, at most 32 characters; both hosts address
+   workers by that name. Pass `--cwd` as an absolute path: a relative one resolves against the
+   server's directory, not yours. Never add or rewrite harness flags.
+
+   **TUI:** open the pane, then start the agent in it. For every entry in `env`, add one
+   `--env KEY=VALUE` argument to the pane command. Pass each pair as one shell-quoted argument;
+   OpenCode's inline JSON must remain intact.
 
    ```bash
-   # no tab for this kind of work yet: create it; its root pane is the worker pane
-   herdr tab create --label <kind> --cwd "$PWD" --no-focus        # result.root_pane.pane_id
+   # the worker's tab does not exist yet: create it; its root pane is the worker pane
+   herdr tab create --label <tab-name> --cwd "$PWD" --no-focus    # result.root_pane.pane_id
    # the tab exists (herdr tab list): split one of its panes
    herdr pane split <pane_in_that_tab> --direction right|down --cwd "$PWD" --no-focus
    herdr pane rename <pane_id> <worker-name>
-   ```
-
-5. **Start the worker** with the Herdr skill's naming rules:
-
-   ```bash
    herdr agent start <worker-name> --kind <harness> --pane <pane_id> -- <args...>
    ```
 
-   Pass the profile's `args` verbatim after `--`. Do not add or rewrite harness flags.
-   A `start` right after the pane opens can fail with `agent_pane_busy` while the shell is still
-   starting; retry after a few seconds. Give the harness a few seconds to come up before the first
-   prompt.
+   Pass `args` verbatim after `--`. A `start` right after the pane opens can fail with
+   `agent_pane_busy` while the shell is still starting; retry after a few seconds. Give the harness
+   a few seconds to come up before the first prompt.
 
-6. **Prompt with the worker tag.** Put the task in a brief file and point the worker at it, so the
-   worker can reread it after a compaction or restart. Every task prompt to a worker, follow-ups
-   included, starts with `[Worker-<worker-name>]`, so the worker and the user can both see which
-   worker a prompt is for. Have the brief name a report file whose last line is a fixed marker
-   (`<TASK>-COMPLETE`, `<TASK>-PARTIAL`, `<TASK>-BLOCKED`, or `REVIEW-READY <n>` for a worker that
-   pauses for review):
+   **App:** one `hc run` starts the worker. Labels put it on screen: `herdr.space` is your own
+   space, from `hc get "$HC_TERMINAL_ID" --json` (`labels["herdr.space"]`); add `herdr.tab` when the
+   worker's tab already exists (`herdr-app ls`). Pass `argv` verbatim after `--`; it
+   already holds the profile's `env`. Then wait until the harness is ready:
 
    ```bash
-   herdr agent prompt <worker-name> "[Worker-<worker-name>] Read <brief> and do it. Report in <report>." --wait
+   hc run --bg --name <worker-name> --cwd "$PWD" --label herdr.space=<space_id> [--label herdr.tab=<tab_id>] -- <argv...>
+   hc wait <worker-name>
    ```
 
-   Workers often run for hours, so do not set a short `--timeout`. When your harness can run a
-   shell command as a background job (Claude Code's `run_in_background`, omp's `async`), run this
-   exact command as one, one job per worker, with no job deadline, and go back to the user while it
-   runs. The user can then give you new instructions mid-task, and the job finishing is your signal
-   to read the worker. Run it in the foreground only on a harness without background jobs.
+   Without `herdr.tab`, the app opens a new tab for the worker. Name it right away: find the tab
+   holding the worker's address in `herdr-app ls`, then
+   `herdr-app do tab.rename --id <tab_id> --name <tab-name>`. When you have no `herdr.space` label
+   yourself, leave the labels out; the worker then runs without a pane. Workers end when you end.
 
-   To wait again on a worker (after a pane move broke the wait, say), use `agent wait`, not another
-   `prompt --wait`. Without `--until` it matches `idle`, `done`, or `blocked`:
+5. **Prompt the worker** with the task prompt, brief, and report the workflow describes:
 
    ```bash
-   herdr agent wait <worker-name>
+   # TUI
+   herdr agent prompt <worker-name> "<task prompt>" --wait
+   # App
+   hc send --wait <worker-name> "<task prompt>"
    ```
 
-   Right after a prompt sent without `--wait`, the worker can still show the idle state from before
-   the prompt, which ends the wait at once; give it about 30 seconds first. When Herdr reports the
-   worker's state as `unknown`, a wait cannot tell when it finishes; check its report file instead.
+   Workers often run for hours. When your harness can run a shell command as a background job
+   (Claude Code's `run_in_background`, omp's `async`), run the wait as one, one job per worker,
+   with no job deadline, and go back to the user while it runs. The user can then give you new
+   instructions mid-task, and the job finishing is your signal to read the worker. Run it in the
+   foreground only on a harness without background jobs.
 
-7. **Read the answer, then decide why the worker stopped.** An idle or done state does not mean the
-   task finished. Read the report's last line, then the pane:
+   - **TUI:** do not set a short `--timeout`. To wait again on a worker (after a pane move broke
+     the wait, say), use `herdr agent wait <worker-name>`, not another `prompt --wait`. Without
+     `--until` it matches `idle`, `done`, or `blocked`. Right after a prompt sent without `--wait`,
+     the worker can still show the idle state from before the prompt, which ends the wait at once;
+     give it about 30 seconds first. When Herdr reports the worker's state as `unknown`, a wait
+     cannot tell when it finishes; check its report file instead.
+   - **App:** a wait checks in after 180 seconds with `reason: timeout`. That is not a failure; run
+     `hc wait <worker-name>` again until the reason is something else. In a background job, loop
+     on it. `hc wait --children any` returns on whichever of your workers stops first. The app also
+     types a note into your input when a worker blocks, errors, or exits. A worker that shows
+     `status: null` in `hc get` does not report its state; judge it by its screen and report file.
+
+6. **Read the answer, then decide why the worker stopped.** An idle or done state does not mean the
+   task finished. Check its report as the workflow says, then read the worker's screen:
 
    ```bash
    tail -n 1 <report>                  # PowerShell: Get-Content <report> -Tail 1
-   herdr agent read <worker-name> --source recent-unwrapped --lines 120
+   herdr agent read <worker-name> --source recent-unwrapped --lines 120   # TUI
+   hc read <worker-name> --lines 120                                      # App
    ```
 
-   - The report was written after your prompt (its modification time is newer) and its last line is
-     a completion marker: the task finished; go to step 8.
-   - Otherwise the worker stopped on a question, a permission dialog, or a usage limit. See
-     [When a worker stops mid-task](#when-a-worker-stops-mid-task).
+   When the report does not show a finished task, the worker stopped on a question, a permission
+   dialog, or a usage limit. See [When a worker stops mid-task](#when-a-worker-stops-mid-task).
 
-8. **Close or compact the worker.**
+7. **Close or compact the worker,** whichever the workflow says.
 
-   - **No follow-up planned:** close it now with `herdr pane close <pane_id>`. Closing hands the
-     space to the neighbouring pane, and closing the last pane of a tab closes the tab.
-   - **Follow-up planned** (a review-and-fix loop, for example): compact its context now with
-     whatever compaction the harness offers (usually a slash command such as `/compact`), so the
-     next task starts small. Send it bare, without the worker tag or `--wait`: a slash command
-     must start the line, and Herdr can report the worker `idle` while it compacts. Before the
-     next task prompt, `herdr agent read` the worker and send only once the compaction has
-     finished.
-   - A worker that stops at `REVIEW-READY <n>` is always kept: compact it as described above as soon
-     as you have read its report, before anything else.
-   - Do not replace or stop a worker only because its context is filling up; the harness compacts
-     on its own.
+   - **Close:** TUI: `herdr pane close <pane_id>`; closing hands the space to the neighbouring pane,
+     and closing the last pane of a tab closes the tab. App: `hc kill <worker-name>`, then
+     `hc rm <worker-name>`; the app closes its pane, and the tab with its last one.
+   - **Compact:** use whatever compaction the harness offers (usually a slash command such as
+     `/compact`). A slash command must start the line, so send it bare, with no prefix and no
+     `--wait`. TUI: `herdr agent prompt <worker-name> "/compact"`. App: `hc send` wraps text in an
+     `<hc from=…>` tag, which turns the command into an ordinary message, so type it as keys:
+     `hc keys <worker-name> / c o m p a c t enter`. Either host can report the worker `idle` or
+     `done` while it compacts. Before the next task prompt, read the worker's screen and send only
+     once the compaction has finished.
 
-9. **Report the outcome** with the worker name, the profile that ran it, and the result.
+8. **Report the outcome** with the worker name, the profile that ran it, and the result.
 
 A delegated task is done when the worker's answer is read back to the caller and every worker is
-either closed or compacted for its planned follow-up — not when the prompt is submitted.
+closed or kept as the workflow says — not when the prompt is submitted.
 
-## Tabs and layout
+## Tab commands
 
-Give each kind of work its own tab instead of stacking every worker beside you.
-
-- **Your tab holds only you.** The orchestrator pane keeps the full width of its tab; never open a
-  worker there.
-- **One tab per kind of work.** Name it with a short lowercase word (`backend`, `docs`, `sound`).
-  The implementer, its reviewers, scouts, and advisors on the same work share that tab.
-- **Idle workers stay in their own tab.** Do not keep a separate parking tab; a worker waiting for
-  its next task stays where its work is, and a worker with nothing left is closed.
-- **Helper panes go with their worker.** A pane a worker opens for itself (a progress monitor, a log
-  tail) belongs in that worker's tab.
-- **Workers that lead other workers** open and close panes only inside their own tab.
-- **Inside a tab,** put workers on the same context side by side in one row rather than stacking
-  them all vertically. Keep row heights equal, and widths equal within a row. Keep every pane at
-  least 12 rows tall.
-- **Re-level the tab whenever you open or close a pane in it,** in the same turn: read it with
-  `herdr pane layout --pane <pane_in_that_tab>` (`rect`, and `ratio` under `splits`), resize, and
-  read it again. Without `--pane`, `layout` reads the user's focused tab, which may be another one.
-- `herdr pane resize --pane <id> --direction up|down|left|right --amount <ratio>` takes a ratio
+- **TUI: re-level a tab** by reading it with `herdr pane layout --pane <pane_in_that_tab>` (`rect`,
+  and `ratio` under `splits`), resizing, and reading it again. Without `--pane`, `layout` reads the
+  user's focused tab, which may be another one.
+- **TUI:** `herdr pane resize --pane <id> --direction up|down|left|right --amount <ratio>` takes a ratio
   between 0 and 1 of the split that owns the edge, not a row count; an integer moves the edge
   far. `--direction` names which edge of that pane moves.
-- To move a pane into another tab:
+- **TUI:** to move a pane into another tab:
   `herdr pane move <pane> --tab <tab> --split right|down --target-pane <pane_in_that_tab> --ratio 0.5 --no-focus`.
   Moving a pane within its own tab reports `changed: false` and does nothing; move it out with
   `--new-tab`, then back. Swap two panes with `herdr pane swap --source-pane <a> --target-pane <b>`.
-- **Moving a worker's pane breaks a running wait on it** with `agent_not_running`, although the
+- **TUI: moving a worker's pane breaks a running wait on it** with `agent_not_running`, although the
   worker is still alive. Start the wait again after a move.
-- `agent prompt`, `agent wait`, and `agent read` address workers by name, whatever tab they are in.
-
-## Coordinating workers
-
-- **Peers on one task** agree on a contract file they both follow. When one needs a change, it
-  edits the contract and tells the other with
-  `herdr agent prompt <peer> "[Worker-<peer>] <short note>"`. For a structured discussion, keep the
-  transcript in one file, append one turn at a time, and pass the turn with a prompt; cap the
-  number of turns.
-- **A lead worker with members** starts them as Herdr panes in its own tab rather than as its
-  harness's built-in subagents, so the user can watch them. Keep it to a few members at once,
-  write each member's brief to a file, and forbid members from delegating further.
-- **Reviewers start fresh for every review**, re-reviews included. Give a re-reviewer only the
-  previous review file and the implementer's account of the fixes, not the earlier conversation.
-  Close a reviewer as soon as its review is read.
-
-## Routing rules
-
-- **Implementation** goes to a builder-class profile. **Research** goes to a scout-class profile; it must not edit files.
-- **Independent review** uses a reviewer-class profile, and the reviewer must differ from the implementer in harness or model. A review by the same profile that wrote the code is not a review.
-- **Difficult problems** — design work, bugs that resisted a first attempt — justify an expensive profile. Routine edits and lookups do not.
-- **Trivial work stays local.** Delegation costs a pane, a startup wait, and context to read back; spend it where a second agent actually helps.
-- **Check a scout's key claims yourself.** Cheap research workers sometimes stop after a few minutes with a shallow answer.
+- **App:** the app arranges the panes of a tab itself; there are no resize or move commands for
+  agents. The `herdr.tab` label is how you choose a worker's tab. Never use `pane.zoom`.
+- `agent prompt`/`agent wait`/`agent read` (TUI) and `hc send`/`hc wait`/`hc read` (App) address
+  workers by name, whatever tab they are in. Workers reach each other the same way.
+- **App:** a lead worker's members are its children and end when the lead ends.
 
 ## When a worker stops mid-task
 
-- **A question or a permission dialog** shows in the pane (`herdr pane read <pane_id>`). Answer it if
-  the task brief settles it; approve only actions the task needs, such as reads. Otherwise ask the
-  user. Never relaunch the worker with a permission-skipping flag to get past dialogs.
-- **A usage limit** usually shows a reset time in the harness's status line. Tell the user, wait
-  until that time (as a background job), then prompt the same worker to continue. Do not start a
-  fresh worker for it.
-- **A profile swapped temporarily** (another model while one provider is out of quota, say): record
-  the exact command that restores it next to the change, and restore it when the limit lifts.
+- **A question or a permission dialog** shows on the worker's screen (`herdr pane read <pane_id>`,
+  or `hc read <worker-name>`; the app also reports the worker `blocked`). Answer it if the task brief
+  settles it; approve only actions the task needs, such as reads. In the app, `hc send` refuses a
+  blocked worker; answer the dialog with `hc keys <worker-name> <keys...>` after reading it.
+  Otherwise ask the user. Never relaunch the worker with a permission-skipping flag to get past
+  dialogs.
+- **A usage limit,** or any other stop the workflow names: handle it as the workflow says.
 
 ## When a worker will not start
 
-`agent start` returning an error, or a worker that dies right after launch, is usually not a profile
-problem. Check in this order, and act only on what the evidence supports:
+A start command returning an error, or a worker that dies right after launch, is usually not a
+profile problem. Check in this order, and act only on what the evidence supports:
 
-- **`agent_not_running` on the first prompt** means the pane's process exited. Read the pane; the real cause is on screen. (On a worker that was already running, it can also mean its pane was moved; see [Tabs and layout](#tabs-and-layout).)
-- **`agent_pane_busy`** right after the pane opened: the shell is still starting. Retry after a few seconds.
+- **TUI: `agent_not_running` on the first prompt** means the pane's process exited. Read the pane; the real cause is on screen. (On a worker that was already running, it can also mean its pane was moved; see [Tab commands](#tab-commands).)
+- **TUI: `agent_pane_busy`** right after the pane opened: the shell is still starting. Retry after a few seconds.
+- **App: `spawn_failed`** means the program in `argv` could not start; the error's `message` names it. **A worker in state `finished`** (exit code 11 from `hc send`) exited: `hc read <worker-name>` shows why.
 - **A harness trust or setup dialog** (a first-run "do you trust this folder", an auth prompt) blocks the worker before any task. It is answered once per directory; report it to the user instead of working around it.
-- **A stale environment.** Panes inherit the environment of the Herdr server, captured when the server started. A `PATH` entry or API key added since then is missing in new panes. Set it in the pane first (`herdr pane run <pane_id> "<command>"`), or have the harness read the value from persistent storage instead of the process environment.
-- **A harness installed under a path with spaces** can fail to launch through `agent start` on Windows. `launch` already prefers a copy on `PATH` without a space; when there is none, a link to the same directory at a path without spaces, placed ahead on `PATH`, works around it.
+- **TUI: a stale environment.** Panes inherit the environment of the Herdr server, captured when the server started. A `PATH` entry or API key added since then is missing in new panes. Set it in the pane first (`herdr pane run <pane_id> "<command>"`), or have the harness read the value from persistent storage instead of the process environment. App terminals do not inherit your environment either; on Windows they read the user and system environment afresh when they start.
+- **TUI: a harness installed under a path with spaces** can fail to launch through `agent start` on Windows. `launch` already prefers a copy on `PATH` without a space; when there is none, a link to the same directory at a path without spaces, placed ahead on `PATH`, works around it. `hc run` starts such a path fine.
 - **A wrong model name** for a harness with no catalog (`claude`) shows up as a harness-side error, not an `agent start` failure. `launch --json` cannot catch this; report the model you used.
 - **The harness itself failing** (a crash inside the harness) is outside this plugin's control. Report the exact command you ran and the harness output.
 
@@ -249,13 +276,18 @@ Never edit a profile to work around a harness-side failure.
 
 ## After Herdr restarts
 
-Herdr restores worker panes after a restart or reboot by resuming each harness session
+**TUI:** Herdr restores worker panes after a restart or reboot by resuming each harness session
 (`claude --resume <id>`, `omp --resume=<session>`) without the profile's launch arguments.
 A resumed worker can run with the harness defaults instead of the profile's settings; Claude Code,
 for one, falls back to its default effort. Before giving a resumed worker more work, compare the
 running process's command line with `launch --json`, and either restore the setting inside the
 harness (Claude Code: `/effort <level>`, then check the status line) or close the worker and launch
 a fresh one.
+
+**App:** closing the window does not stop workers; they keep running in herdr-core. A worker whose
+program was lost (a crash, a host shutdown) is never rerun; a worker the app keeps comes back as a
+plain shell. When `hc get <worker-name>` shows a shell instead of the harness, remove it and launch
+a fresh worker.
 
 ## Reading `--compact`
 

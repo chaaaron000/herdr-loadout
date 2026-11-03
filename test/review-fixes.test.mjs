@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { splitListInput, formatListInput } from "../src/tui/app.mjs";
+import { splitListInput, formatListInput } from "../src/core/editor.mjs";
 import { layoutFor } from "../src/core/layout.mjs";
 import { effortLevels, listModels } from "../src/core/detect.mjs";
 import { pickerView } from "../src/core/picker.mjs";

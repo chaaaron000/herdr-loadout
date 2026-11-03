@@ -60,14 +60,11 @@ export function globalConfigPath(env = process.env) {
   return path.join(configDir(env), CONFIG_FILE_NAME);
 }
 
-/**
- * Walk up from `start` looking for <dir>/.herdr/loadout.toml.
- * Returns the project config path or null.
- */
-export function findProjectConfig(start = process.cwd(), fsImpl = fs) {
+/** Walk up from `start` looking for <dir>/.herdr/<name>; the path or null. */
+function findInProject(start, name, fsImpl) {
   let dir = path.resolve(start);
   for (;;) {
-    const candidate = path.join(dir, PROJECT_DIR_NAME, CONFIG_FILE_NAME);
+    const candidate = path.join(dir, PROJECT_DIR_NAME, name);
     if (fsImpl.existsSync(candidate)) return candidate;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
@@ -75,7 +72,32 @@ export function findProjectConfig(start = process.cwd(), fsImpl = fs) {
   }
 }
 
+/** Walk up from `start` looking for <dir>/.herdr/loadout.toml. */
+export function findProjectConfig(start = process.cwd(), fsImpl = fs) {
+  return findInProject(start, CONFIG_FILE_NAME, fsImpl);
+}
+
 /** Directory to create project overrides in (project root, not .herdr). */
 export function projectConfigPath(projectRoot) {
   return path.join(path.resolve(projectRoot), PROJECT_DIR_NAME, CONFIG_FILE_NAME);
+}
+
+export const WORKFLOW_FILE_NAME = "workflow.md";
+
+export function globalWorkflowPath(env = process.env) {
+  return path.join(configDir(env), WORKFLOW_FILE_NAME);
+}
+
+/**
+ * The project workflow for `projectRoot`: the nearest one up the tree, else
+ * where a new one goes — beside the project's loadout.toml when it has one, so
+ * both files share a project root.
+ * @returns {{path: string, exists: boolean}}
+ */
+export function projectWorkflowPath(projectRoot, fsImpl = fs) {
+  const found = findInProject(projectRoot, WORKFLOW_FILE_NAME, fsImpl);
+  if (found) return { path: found, exists: true };
+  const config = findProjectConfig(projectRoot, fsImpl);
+  const dir = config ? path.dirname(config) : path.join(path.resolve(projectRoot), PROJECT_DIR_NAME);
+  return { path: path.join(dir, WORKFLOW_FILE_NAME), exists: false };
 }

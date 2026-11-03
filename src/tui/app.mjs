@@ -6,16 +6,32 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import { deleteProfile, ensureGlobalConfig, loadConfig, upsertProfile } from "../core/store.mjs";
-import { diffFields, mergeProfiles, overrideDelta, patchProfile, sameValue } from "../core/merge.mjs";
-import { COSTS, KNOWN_HARNESSES } from "../core/schema.mjs";
-import { findProjectConfig, globalConfigPath, projectConfigPath } from "../core/paths.mjs";
-import { detectHarnesses, dryRun, effortLevels, listModelsAsync, modelEffort, withModelEffort } from "../core/detect.mjs";
+import { diffFields } from "../core/merge.mjs";
+import { detectHarnesses, dryRun, listModelsAsync } from "../core/detect.mjs";
 import { visibleWindow } from "../core/window.mjs";
 import { layoutFor, listWindow as listWindowFor } from "../core/layout.mjs";
 import { pickerView, nextSort, SORT_LABELS } from "../core/picker.mjs";
 import { clipStartToWidth, clipToWidth, displayWidth, padToWidth } from "../core/textwidth.mjs";
-import { PERMISSION_FIELDS, permissionOptions, permissionValue, validatePermissions } from "../core/permissions.mjs";
+import { PERMISSION_FIELDS, permissionValue } from "../core/permissions.mjs";
+import {
+  applyFieldValue,
+  applyRemoval,
+  deriveId,
+  differingFields,
+  draftGlobalOf,
+  draftIsDirty,
+  editableFields,
+  fieldNames,
+  fieldOptions,
+  fieldValueOf,
+  formatListInputValue,
+  labelOf,
+  loadEditorState,
+  openDraft,
+  planRemoval,
+  revertField,
+  saveProfileDraft,
+} from "../core/editor.mjs";
 
 const h = React.createElement;
 
@@ -65,12 +81,6 @@ function Field({ label, value, width = 44, active = false, differs = false }) {
 /** Global profiles (and their project overrides) first, project-only profiles after. */
 function sectionOf(profile) {
   return profile.origin === "project-only" ? "project" : "global";
-}
-
-/** Lower-case field names for the "differs from global" summary. */
-function fieldNames(keys) {
-  const order = (key) => (EDITABLE.includes(key) ? EDITABLE.indexOf(key) : EDITABLE.length);
-  return [...keys].sort((a, b) => order(a) - order(b)).map((key) => (labelOf(key) ?? key).replace(/ (.*)$/, "").toLowerCase()).join(", ");
 }
 
 function ListView({ profiles, selected, detection, globalProfiles, projectPath, projectTarget, layout }) {
@@ -170,29 +180,6 @@ function DetectView({ detection, catalogs, layout }) {
       );
     }),
     h(Text, { dimColor: true }, catalogs.__loading ? "loading catalogs…" : ""),
-  );
-}
-
-export const EDITABLE = ["name", "harness", "model", "effort", "sandbox", "approval_policy", "permission_mode", "cost", "when_to_use", "avoid_when", "extra_args", "tags"];
-
-/** Fields the editor shows; effort is hidden when the model id already fixes it. */
-export function editableFields(draft) {
-  return EDITABLE.filter((field) => {
-    if (field === "effort") return !modelEffort(draft?.harness, draft?.model);
-    return !PERMISSION_FIELDS.includes(field) || permissionOptions(draft?.harness, field).length > 0;
-  });
-}
-
-/** Value of an editable field as the editor shows it (permissions can be inherited). */
-function fieldValueOf(profile, field) {
-  return PERMISSION_FIELDS.includes(field) ? permissionValue(profile, field) : profile?.[field];
-}
-
-/** Editable fields whose value differs from the global profile. */
-export function differingFields(draft, globalProfile) {
-  if (!draft || !globalProfile) return new Set();
-  return new Set(
-    editableFields(draft).filter((field) => !sameValue(fieldValueOf(draft, field), fieldValueOf(globalProfile, field))),
   );
 }
 
@@ -363,55 +350,6 @@ function EditorView({ draft, dirty, cursor, fieldState, catalogs, detection, edi
   );
 }
 
-function labelOf(field) {
-  return {
-    name: "Name",
-    harness: "Harness",
-    model: "Model",
-    effort: "Effort",
-    sandbox: "Sandbox (Codex)",
-    approval_policy: "Approval (Codex)",
-    permission_mode: "Permissions",
-    cost: "Cost",
-    when_to_use: "When",
-    avoid_when: "Avoid",
-    extra_args: "Extra args",
-    tags: "Tags",
-  }[field];
-}
-
-/** Options offered for the focused field; empty means free-form text. */
-/**
- * Rows offered for the focused field.
- *
- * Every row is a record — never a bare string — so the picker keeps the
- * metadata it filters and sorts on (a model's label and context size). The
- * effort levels come from the *selected* model, not the union of the catalog,
- * because a harness can reject a level its other models accept.
- */
-export function fieldOptions(draft, cursor, catalog, detection) {
-  const field = editableFields(draft)[cursor];
-  if (PERMISSION_FIELDS.includes(field)) {
-    return ["inherit", ...permissionOptions(draft.harness, field)].map((id) => ({ id }));
-  }
-  if (field === "harness") {
-    const ids = new Set([...KNOWN_HARNESSES, "custom"]);
-    for (const entry of detection ?? []) ids.add(entry.id);
-    return [...ids].map((id) => ({ id }));
-  }
-  if (field === "cost") return COSTS.map((id) => ({ id }));
-  if (field === "effort") {
-    const models = catalog?.models ?? [];
-    const selected = models.find((model) => model.id === draft.model);
-    const levels = effortLevels(draft.harness, { models: selected ? [selected] : models });
-    return levels.map((id) => ({ id }));
-  }
-  if (field === "model") {
-    return (catalog?.models ?? []).map((model) => ({ ...model }));
-  }
-  return [];
-}
-
 export default function App({ initialProject }) {
   const { exit } = useApp();
   const [tab, setTab] = useState("list");
@@ -451,20 +389,9 @@ export default function App({ initialProject }) {
   const [editKind, setEditKind] = useState("global");
   const [projectRoot, setProjectRoot] = useState(initialProject ?? process.cwd());
 
-  const projectPath = useMemo(() => findProjectConfig(projectRoot), [projectRoot, reload]);
-  const globalPath = globalConfigPath();
-  const projectWritePath = useMemo(() => projectConfigPath(projectRoot), [projectRoot]);
-  // The project file that is actually in effect; a new one is created at the root.
-  const projectTarget = projectPath ?? projectWritePath;
-
-  const { profiles, globalProfiles, projectProfiles } = useMemo(() => {
-    ensureGlobalConfig({ globalPath });
-    const loaded = loadConfig({ globalPath, projectPath });
-    const projectEntries = loaded.project?.profiles ?? [];
-    const merged = mergeProfiles(loaded.profiles, projectEntries);
-    return { profiles: merged.profiles, globalProfiles: loaded.profiles ?? [], projectProfiles: projectEntries };
-    // reload is the explicit invalidation key
-  }, [globalPath, projectPath, reload]);
+  // reload is the explicit invalidation key
+  const editorState = useMemo(() => loadEditorState({ projectRoot }), [projectRoot, reload]);
+  const { projectPath, projectTarget, profiles, globalProfiles } = editorState;
 
   useEffect(() => {
     setDetection(detectHarnesses());
@@ -518,103 +445,30 @@ export default function App({ initialProject }) {
   const selectedProfile = profiles[selected] ?? null;
   const fields = editableFields(draft);
   // The global profile the open draft is compared against (none for new/project-only).
-  const draftGlobal =
-    draft?.id && (editKind === "global" || editKind === "override")
-      ? globalProfiles.find((entry) => entry?.id === draft.id) ?? null
-      : null;
+  const draftGlobal = draftGlobalOf(draft, editKind, globalProfiles);
 
-  /**
-   * Save the open draft to one explicit target.
-   *
-   * "global" edits the shared profile (only what was changed in this session, so
-   * a project override is never baked into the global file). "project" writes
-   * only what differs from global, or the whole body for a project-only profile.
-   */
+  /** Save the open draft to one explicit target ("global" or "project"). */
   const saveDraft = (target) => {
-    const refuse = (text) => setFieldState((prev) => ({ ...prev, statusOk: false, status: text }));
-    const done = (text) => {
-      setReload((value) => value + 1);
-      setTab("list");
-      setMessage(text);
-      setDraft(null);
-    };
-
-    if (target === "global" && editKind === "project") {
-      refuse("project profile — it has no global copy, save it with p");
-      return;
-    }
-    const candidate = { ...draft };
-    const permissionErrors = validatePermissions(candidate);
-    if (permissionErrors.length) {
-      refuse(permissionErrors.join("; "));
-      return;
-    }
-    if (!candidate.id) candidate.id = deriveId(candidate.name);
-    if (!candidate.id) {
-      refuse("profile needs a name (or an id) before saving");
-      return;
-    }
-
-    const isNew = editKind === "new";
-    const globalProfile = globalProfiles.find((entry) => entry?.id === candidate.id) ?? null;
-    const projectEntry = projectProfiles.find((entry) => entry?.id === candidate.id) ?? null;
-
-    // A new or copied profile must never silently replace one that already exists.
-    const taken = target === "global" ? globalProfile : globalProfile ?? projectEntry;
-    if (isNew && taken) {
-      refuse(`"${candidate.id}" already exists ${taken === globalProfile ? "in global" : "in this project"} — use another name`);
-      return;
-    }
-
-    if (target === "global") {
-      const original = baseline ? JSON.parse(baseline) : {};
-      const payload = !isNew && globalProfile ? patchProfile(globalProfile, original, candidate) : candidate;
-      const result = upsertProfile(globalPath, payload);
-      if (!result.ok) {
-        refuse(result.errors.join("; "));
-        return;
-      }
-      // An edit to a field this project overrides will not show up here.
-      const edited = isNew ? [] : diffFields(candidate, original);
-      const shadowed = (draft.overrides ?? []).filter((key) => edited.includes(key));
-      done(
-        `saved ${candidate.id} to global${shadowed.length ? ` — this project's override still sets ${fieldNames(shadowed)}` : ""}`,
-      );
-      return;
-    }
-
-    if (!globalProfile) {
-      // Project-only profile: nothing to inherit from, so store the whole body.
-      const result = upsertProfile(projectTarget, overrideDelta(candidate, null).entry);
-      if (!result.ok) {
-        refuse(result.errors.join("; "));
-        return;
-      }
-      done(`saved ${candidate.id} to project`);
-      return;
-    }
-
-    const { entry, changed } = overrideDelta(candidate, globalProfile);
-    if (changed.length === 0) {
-      // Back to the global values: the override has nothing left to say.
-      if (!projectEntry) {
-        refuse("no differences from global — nothing to save");
-        return;
-      }
-      const removed = deleteProfile(projectTarget, candidate.id);
-      if (!removed.ok) {
-        refuse(removed.errors.join("; "));
-        return;
-      }
-      done(`${candidate.id} matches global again — project override removed`);
-      return;
-    }
-    const result = upsertProfile(projectTarget, entry, { partial: true });
+    const result = saveProfileDraft({ draft, baseline, target, kind: editKind, state: editorState });
     if (!result.ok) {
-      refuse(result.errors.join("; "));
+      setFieldState((prev) => ({ ...prev, statusOk: false, status: result.error }));
       return;
     }
-    done(`saved ${candidate.id} as project override (${fieldNames(changed)})`);
+    setReload((value) => value + 1);
+    setTab("list");
+    setMessage(result.message);
+    setDraft(null);
+  };
+
+  /** Open the editor on a draft from `openDraft`. */
+  const startEditing = (opened) => {
+    setDraft(opened.draft);
+    setBaseline(opened.baseline);
+    setEditKind(opened.kind);
+    setCursor(0);
+    setMessage("");
+    setFieldState({ mode: "fields", buffer: "", optionIndex: 0, optionOffset: 0, fieldOffset: 0, query: "", searching: false, sort: "catalog", status: "", statusOk: true });
+    setTab("edit");
   };
 
   useInput((input, key) => {
@@ -820,21 +674,9 @@ export default function App({ initialProject }) {
       }
       if (input === "r") {
         // Put the focused field back to the global value.
-        if (!draftGlobal || !differingFields(draft, draftGlobal).has(field)) {
-          setFieldState((prev) => ({
-            ...prev,
-            statusOk: true,
-            status: draftGlobal ? "this field already matches global" : "no global profile to revert to",
-          }));
-          return;
-        }
-        setDraft((prev) => {
-          const next = { ...prev };
-          if (draftGlobal[field] === undefined) delete next[field];
-          else next[field] = structuredClone(draftGlobal[field]);
-          return withModelEffort(next);
-        });
-        setFieldState((prev) => ({ ...prev, statusOk: true, status: `${labelOf(field)} back to the global value` }));
+        const result = revertField(draft, draftGlobal, field);
+        if (result.ok) setDraft(result.draft);
+        setFieldState((prev) => ({ ...prev, statusOk: true, status: result.message }));
         return;
       }
       if (input === "t") {
@@ -880,27 +722,20 @@ export default function App({ initialProject }) {
 
     // ---- delete confirmation ----
     if (pendingDelete) {
-      const target = pendingDelete;
+      const plan = pendingDelete;
       setPendingDelete(null);
       if (input !== "y") {
         setMessage("delete cancelled");
         return;
       }
-      const result = deleteProfile(target.path, target.id);
-      if (result.ok) {
-        // Deleting a global profile must not leave its override behind: it would
-        // reappear as a half-formed project entry.
-        if (target.overridePath) deleteProfile(target.overridePath, target.id);
-        setReload((value) => value + 1);
-        if (target.action === "reset") {
-          setMessage(`reset ${target.id} — it follows the global profile again`);
-        } else {
-          setSelected((value) => Math.max(0, value - 1));
-          setMessage(`deleted ${target.id} from ${target.scope}`);
-        }
-      } else {
-        setMessage(result.errors.join("; "));
+      const result = applyRemoval(plan);
+      if (!result.ok) {
+        setMessage(result.error);
+        return;
       }
+      setReload((value) => value + 1);
+      if (plan.action === "delete") setSelected((value) => Math.max(0, value - 1));
+      setMessage(result.message);
       return;
     }
 
@@ -913,65 +748,17 @@ export default function App({ initialProject }) {
       setMessage("");
       setTab("detect");
     }
-    else if (input === "a") {
-      const blank = blankDraft();
-      setDraft(blank);
-      setBaseline(JSON.stringify(blank));
-      setEditKind("new");
-      setCursor(0);
-      setMessage("");
-      setFieldState({ mode: "fields", buffer: "", optionIndex: 0, optionOffset: 0, fieldOffset: 0, query: "", searching: false, sort: "catalog", status: "", statusOk: true });
-      setTab("edit");
-    } else if (input === "d" && selectedProfile) {
-      // Only a project-only profile lives in the project file. Anything else is a
-      // global profile, so delete removes it from global (and its project
-      // override with it); resetting just the override is `r`.
-      const projectOnly = selectedProfile.origin === "project-only";
-      const overridden = selectedProfile.origin === "project-override";
-      const scope = projectOnly ? "project" : "global";
-      setPendingDelete({
-        action: "delete",
-        id: selectedProfile.id,
-        scope,
-        path: projectOnly ? projectTarget : globalPath,
-        overridePath: overridden ? projectTarget : null,
-      });
-      setMessage(
-        `delete "${selectedProfile.name ?? selectedProfile.id}" from ${scope}${overridden ? " and its project override" : ""}?`,
-      );
-    } else if (input === "r" && selectedProfile) {
-      // Drop the project override so the profile follows global again.
-      if (selectedProfile.origin !== "project-override") {
-        setMessage(
-          selectedProfile.origin === "project-only"
-            ? "project profiles have no global copy to reset to — edit them directly"
-            : "no project override to reset",
-        );
+    else if (input === "a") startEditing(openDraft("new"));
+    else if ((input === "d" || input === "r") && selectedProfile) {
+      const plan = planRemoval(selectedProfile, input === "r" ? "reset" : "delete", editorState);
+      if (!plan.ok) {
+        setMessage(plan.error);
         return;
       }
-      setPendingDelete({ action: "reset", id: selectedProfile.id, scope: "project", path: projectTarget });
-      setMessage(`reset "${selectedProfile.name ?? selectedProfile.id}" to the global profile?`);
-    } else if ((input === "e" || key.return) && selectedProfile) {
-      const original = { ...selectedProfile };
-      setDraft(original);
-      setBaseline(JSON.stringify(original));
-      setEditKind(
-        selectedProfile.origin === "project-only" ? "project" : selectedProfile.origin === "project-override" ? "override" : "global",
-      );
-      setCursor(0);
-      setMessage("");
-      setFieldState({ mode: "fields", buffer: "", optionIndex: 0, optionOffset: 0, fieldOffset: 0, query: "", searching: false, sort: "catalog", status: "", statusOk: true });
-      setTab("edit");
-    } else if (input === "c" && selectedProfile) {
-      const copy = { ...selectedProfile, id: `${selectedProfile.id}-copy`, name: `${selectedProfile.name ?? selectedProfile.id} Copy` };
-      setDraft(copy);
-      setBaseline(null);
-      setEditKind("new");
-      setCursor(0);
-      setMessage("");
-      setFieldState({ mode: "fields", buffer: "", optionIndex: 0, optionOffset: 0, fieldOffset: 0, query: "", searching: false, sort: "catalog", status: "", statusOk: true });
-      setTab("edit");
-    }
+      setPendingDelete(plan);
+      setMessage(plan.question);
+    } else if ((input === "e" || key.return) && selectedProfile) startEditing(openDraft("edit", selectedProfile));
+    else if (input === "c" && selectedProfile) startEditing(openDraft("copy", selectedProfile));
   });
 
   // A pane too small for the frame cannot render any layout correctly; say so
@@ -1123,106 +910,6 @@ function fitHints(items, width, dropOrder = []) {
     current = current.filter(([item]) => item !== key);
   }
   return current;
-}
-
-/** True when the draft differs from the snapshot taken when editing began. */
-function draftIsDirty(draft, baseline) {
-  return baseline === null || JSON.stringify(draft) !== baseline;
-}
-
-function blankDraft() {
-  return {
-    id: "",
-    name: "",
-    harness: "claude",
-    model: "",
-    effort: "medium",
-    cost: "normal",
-    when_to_use: "",
-    avoid_when: "",
-  };
-}
-
-/**
- * Text -> value for a field.
- *
- * List fields split on whitespace and commas, but a quoted segment keeps its
- * spaces, so an argument like "C:/Program Files/app" survives a round trip. Without
- * this, opening Extra args and confirming would shred any path containing a
- * space into separate arguments.
- */
-function parseFieldValue(field, raw) {
-  if (field === "extra_args" || field === "tags") return splitListInput(raw);
-  return raw;
-}
-
-/**
- * Changing harness must not carry a permission policy into a different adapter,
- * and a model id that fixes the effort sets it.
- */
-export function applyFieldValue(draft, field, raw) {
-  const value = PERMISSION_FIELDS.includes(field) && raw === "inherit" ? "" : parseFieldValue(field, raw);
-  const next = { ...draft, [field]: value };
-  if (field === "harness" && value !== draft.harness) {
-    for (const key of PERMISSION_FIELDS) {
-      if (Object.hasOwn(draft, key)) next[key] = "";
-    }
-    if ((draft.harness === "claude" || draft.harness === "codex") && draft.mode) next.mode = "";
-  }
-  return withModelEffort(next);
-}
-
-/** Split a list input, honouring single and double quotes. */
-export function splitListInput(raw) {
-  const text = String(raw ?? "");
-  const out = [];
-  let current = "";
-  let quote = null;
-  for (const char of text) {
-    if (quote) {
-      if (char === quote) quote = null;
-      else current += char;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === "," || /\s/.test(char)) {
-      if (current) out.push(current);
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current) out.push(current);
-  return out;
-}
-
-/** Buffer contents when a field is opened for typing. */
-function formatListInputValue(field, value) {
-  if (field === "extra_args" || field === "tags") return formatListInput(value);
-  return String(value ?? "");
-}
-
-/** Render a list value so it round-trips through splitListInput. */
-export function formatListInput(value) {
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((item) => {
-      const text = String(item);
-      return /\s/.test(text) ? `"${text}"` : text;
-    })
-    .join(" ");
-}
-
-/** Slug used when a new profile is saved without an explicit id. */
-export function deriveId(name) {
-  return String(name ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[-._]+|[-._]+$/g, "");
 }
 
 export { App };

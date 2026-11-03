@@ -24,7 +24,7 @@ task DAG, scheduler 는 기존 Herdr + Herdr Skill 이 담당한다.
 ## 요구사항
 
 - **Node.js ≥ 22** (플러그인 명령과 CLI 가 Node 로 실행된다)
-- Herdr ≥ 0.7.0
+- Herdr ≥ 0.7.0 (TUI). Herdr 데스크톱 앱(herdr-core `hc`)에서도 CLI와 스킬이 동작한다 — [Herdr 앱에서 쓰기](#herdr-앱에서-쓰기) 참고
 - `npm` (GitHub 설치 시 의존성 설치 단계 `npm ci --omit=dev` 가 실행된다)
 
 ## 설치
@@ -71,6 +71,20 @@ herdr plugin action invoke herdr-loadout.open-ui-popup
 ```
 
 단축키를 등록했다면 그 키로 열 수도 있다.
+
+Herdr 앱에서는 앱 전용 편집기(앱 모드)를 쓴다. 소스 체크아웃에서 한 번 설치한다:
+
+```bash
+npm run install:app-mod                         # ~/.config/herdr-app/mods/herdr-loadout 에 설치
+npm run install:app-mod -- --key ctrl-shift-a   # 단축키도 등록 (이미 쓰는 키면 거부)
+herdr-app do mod.open --name herdr-loadout      # 단축키 없이 열기
+```
+
+- 포커스된 터미널의 프로젝트를 기준으로 전역/프로젝트 프로필을 보여 주고, 키와 조작은 TUI 와 같다
+  (`Enter` 편집, `a` 추가, `c` 복사, `d` 삭제, `r` override 해제, `j` harness 목록, 편집 중 `g`/`p` 저장, `t` 실행 점검, `Esc` 뒤로/닫기). 마우스로도 누를 수 있다.
+- 모든 읽기·쓰기는 `herdr-loadout editor <action>` (CLI 의 JSON 백엔드)를 거치므로 TUI 와 규칙이 같다.
+- 앱 모드는 Node 를 쓸 수 없어서, 설치 스크립트가 node 와 CLI 의 경로를 `cli.js` 에 적어 둔다. 체크아웃을 옮기면 다시 설치한다.
+- 앱의 명령 팔레트(Ctrl+Shift+P)는 모드 항목을 받지 않으므로 단축키나 `mod.open` 으로 연다.
 
 ### 단축키 등록 (선택)
 
@@ -198,10 +212,10 @@ node bin/herdr-loadout.mjs list --compact
 `list --compact` 출력은 헤더/색/장식이 없는 고정 형식이다. 오케스트레이터 파서가 의존한다.
 
 ```text
-builder | normal | implementation/refactor
+builder | expensive | implementation/refactor/design
+junior | normal | implementation/light
 reviewer | cheap | review
 scout | cheap | research
-heavy | expensive | design
 ```
 
 ### 3. 설정 파일
@@ -317,12 +331,44 @@ herdr plugin action invoke herdr-loadout.add-profile
 
 | 스킬 | 용도 |
 |---|---|
-| `herdr-loadout` | 프로필로 worker 에게 작업 위임 (조회 → `launch --json` → `herdr agent start`) |
-| `herdr-loadout-edit` | 프로필 추가·수정·삭제·가져오기 |
+| `herdr-loadout` | 프로필로 worker 에게 작업 위임 (작업 방식 읽기 → 조회 → `launch --json` → `herdr agent start` 또는 `hc run`) |
+| `herdr-loadout-edit` | 프로필과 작업 방식 추가·수정·삭제·가져오기 |
 
-`launch <id> --json` 은 `ok`, `harness`, `args`, `env` 를 돌려준다. `args` 는
-`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>` 뒤에 그대로 붙인다.
+`launch <id> --json` 은 `ok`, `harness`, `args`, `env`, `argv` 를 돌려준다. TUI 에서는 `args` 를
+`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>` 뒤에 그대로 붙이고,
 `env`의 각 항목은 pane 생성 시 `herdr pane split --env 'KEY=VALUE'`로 전달한다.
+
+### 작업 방식 (workflow)
+
+스킬에는 명령만 있고, 위임할 때의 선택은 작업 방식 파일에 있다: 어떤 프로필 계열에 어떤 일을 맡길지,
+프롬프트·brief·보고 파일 형식, 탭 쓰는 법, worker 를 언제 닫고 언제 남길지, worker 끼리 협업하는 법.
+프로필처럼 두 층이다.
+
+| 층 | 파일 | 용도 |
+|---|---|---|
+| 전역 | `<설정 폴더>/workflow.md` (없으면 내장 기본값) | 모든 프로젝트 공통 |
+| 프로젝트 | `<project>/.herdr/workflow.md` | 이 프로젝트만의 규칙. 전역 뒤에 붙고, 어긋나면 이쪽을 따른다 |
+
+```bash
+herdr-loadout workflow                      # 이 프로젝트에 적용되는 작업 방식 (스킬이 위임 전에 읽음)
+herdr-loadout workflow init --project .     # 프로젝트 규칙 파일 만들기 (다른 점만 쓴다)
+herdr-loadout workflow init                 # 내장 기본값을 전역 파일로 복사해 고치기
+```
+
+전역 파일을 만들면 그 뒤로는 사용자 파일이라, 내장 기본값이 바뀌어도 반영되지 않는다.
+`herdr-loadout path` 의 `globalWorkflow`, `projectWorkflow` 가 두 파일 위치다.
+
+### Herdr 앱에서 쓰기
+
+스킬은 `HERDR_ENV=1` 이면 TUI(`herdr`), `HC_TERMINAL_ID` 가 있으면 앱(`hc`, `herdr-app`)으로 판단해
+해당 CLI 를 쓴다. 앱에서는 `launch <id> --json --host hc` 를 쓴다.
+
+- `argv` 가 worker 명령 전체다: `hc run --bg --name <name> --cwd <dir> --label herdr.space=<space> -- <argv...>`.
+- `hc run` 은 환경 변수를 넘길 수 없으므로, `env` 가 있는 프로필의 `argv` 는
+  `herdr-loadout exec <id>` 를 거친다. `exec` 가 env 를 적용해 harness 를 띄우고 종료 코드를 그대로 돌려준다.
+- Codex 는 `hc` 아래에서 `--no-daemon` 이 필요해 `--host hc` 일 때 자동으로 붙는다.
+- 앱에는 플러그인 액션이 없다. launcher 가 없으면 소스 체크아웃에서 `node scripts/setup-shim.mjs` 로 만든다.
+
 스킬 파일은 라이브러리로 복사되므로 줄바꿈을 LF 로 고정했다(`.gitattributes`).
 
 ## 프로필 필드

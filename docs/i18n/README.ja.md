@@ -25,7 +25,7 @@ Profile Registry (このプラグイン)
 ## 要件
 
 - **Node.js ≥ 22**（プラグインコマンドと CLI は Node で動作します）
-- Herdr ≥ 0.7.0
+- Herdr ≥ 0.7.0（TUI）。Herdr デスクトップアプリ（herdr-core `hc`）でも CLI とスキルが動作します — [Herdr アプリで使う](#herdr-アプリで使う) を参照
 - `npm`（GitHub からのインストールでは依存関係の導入 `npm ci --omit=dev` が実行されます）
 
 ## インストール
@@ -72,6 +72,20 @@ herdr plugin action invoke herdr-loadout.open-ui-popup
 ```
 
 キーバインドを登録していれば、そのキーでも開けます。
+
+Herdr アプリではアプリ専用エディタ（アプリ mod）を使います。ソースのチェックアウトから一度インストールします:
+
+```bash
+npm run install:app-mod                         # ~/.config/herdr-app/mods/herdr-loadout にインストール
+npm run install:app-mod -- --key ctrl-shift-a   # キーバインドも登録（使用中のキーなら拒否）
+herdr-app do mod.open --name herdr-loadout      # キーバインドなしで開く
+```
+
+- フォーカス中のターミナルのプロジェクトを基準にグローバル/プロジェクトのプロファイルを表示し、キーと操作は TUI と同じです
+  （`Enter` 編集、`a` 追加、`c` コピー、`d` 削除、`r` override 解除、`j` harness 一覧、編集中 `g`/`p` 保存、`t` 実行チェック、`Esc` 戻る/閉じる）。マウスでもクリックできます。
+- すべての読み書きは `herdr-loadout editor <action>`（CLI の JSON バックエンド）を経由するため、TUI とルールが同じです。
+- アプリ mod は Node を使えないため、インストールスクリプトが node と CLI のパスを `cli.js` に書き込みます。チェックアウトを移動したら再インストールします。
+- アプリのコマンドパレット（Ctrl+Shift+P）は mod の項目を受け付けないため、キーバインドか `mod.open` で開きます。
 
 ### キーバインドの登録（任意）
 
@@ -200,10 +214,10 @@ node bin/herdr-loadout.mjs list --compact
 `list --compact` はヘッダー・色・装飾のない固定形式です。オーケストレーターのパーサーが依存します。
 
 ```text
-builder | normal | implementation/refactor
+builder | expensive | implementation/refactor/design
+junior | normal | implementation/light
 reviewer | cheap | review
 scout | cheap | research
-heavy | expensive | design
 ```
 
 ### 3. 設定ファイル
@@ -320,11 +334,44 @@ herdr plugin action invoke herdr-loadout.add-profile
 
 | スキル | 用途 |
 |---|---|
-| `herdr-loadout` | プロファイルを使って worker に作業を委任（照会 → `launch --json` → `herdr agent start`） |
-| `herdr-loadout-edit` | プロファイルの追加・変更・削除・インポート |
+| `herdr-loadout` | プロファイルを使って worker に作業を委任（作業方針の読み込み → 照会 → `launch --json` → `herdr agent start` または `hc run`） |
+| `herdr-loadout-edit` | プロファイルと作業方針の追加・変更・削除・インポート |
 
-`launch <id> --json` は `ok`、`harness`、`args` を返します。`args` は
-`herdr agent start <name> --kind <harness> --` の後ろにそのまま付けます。
+`launch <id> --json` は `ok`、`harness`、`args`、`env`、`argv` を返します。TUI では `args` を
+`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>` の後ろにそのまま付け、
+`env` の各項目は pane 作成時に `herdr pane split --env 'KEY=VALUE'` で渡します。
+
+### 作業方針（workflow）
+
+スキルにはコマンドだけがあり、委任するときの選択は作業方針ファイルにあります: どのプロファイル系統にどの仕事を任せるか、
+プロンプト・brief・報告ファイルの形式、タブの使い方、worker をいつ閉じていつ残すか、worker 同士の協業のしかた。
+プロファイルと同じく 2 層です。
+
+| 層 | ファイル | 用途 |
+|---|---|---|
+| グローバル | `<設定フォルダ>/workflow.md`（なければ組み込みのデフォルト） | すべてのプロジェクトに共通 |
+| プロジェクト | `<project>/.herdr/workflow.md` | このプロジェクトだけのルール。グローバルの後ろに付き、食い違う場合はこちらに従う |
+
+```bash
+herdr-loadout workflow                      # このプロジェクトに適用される作業方針（スキルが委任前に読む）
+herdr-loadout workflow init --project .     # プロジェクトのルールファイルを作る（違う点だけ書く）
+herdr-loadout workflow init                 # 組み込みのデフォルトをグローバルファイルにコピーして編集する
+```
+
+グローバルファイルを作ると以後はユーザーのファイルになるため、組み込みのデフォルトが変わっても反映されません。
+`herdr-loadout path` の `globalWorkflow`、`projectWorkflow` が 2 つのファイルの場所です。
+
+### Herdr アプリで使う
+
+スキルは `HERDR_ENV=1` なら TUI（`herdr`）、`HC_TERMINAL_ID` があればアプリ（`hc`、`herdr-app`）と判断し、
+対応する CLI を使います。アプリでは `launch <id> --json --host hc` を使います。
+
+- `argv` が worker コマンド全体です: `hc run --bg --name <name> --cwd <dir> --label herdr.space=<space> -- <argv...>`。
+- `hc run` は環境変数を渡せないため、`env` があるプロファイルの `argv` は
+  `herdr-loadout exec <id>` を経由します。`exec` が env を適用して harness を起動し、終了コードをそのまま返します。
+- Codex は `hc` 配下で `--no-daemon` が必要なため、`--host hc` のときは自動で付きます。
+- アプリにはプラグインアクションがありません。launcher がなければ、ソースチェックアウトで `node scripts/setup-shim.mjs` を実行して作成します。
+
 スキルファイルはライブラリへコピーされるため、改行は LF に固定しています（`.gitattributes`）。
 
 ## プロファイルのフィールド

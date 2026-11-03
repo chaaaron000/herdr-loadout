@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveId, App } from "../src/tui/app.mjs";
+import { App } from "../src/tui/app.mjs";
+import { deriveId } from "../src/core/editor.mjs";
 
 test("deriveId slugs human names into valid profile ids", () => {
   assert.equal(deriveId("Unity Builder"), "unity-builder");

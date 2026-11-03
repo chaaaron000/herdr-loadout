@@ -72,7 +72,7 @@ async function renderInk(projectRoot) {
   await app.waitUntilExit();
 }
 
-async function main(argv) {
+export async function main(argv) {
   let parsed;
   try {
     parsed = parseArgs({
