@@ -3,8 +3,9 @@
 // Opened as a window (`mod.open herdr-loadout`, usually from a key). The list
 // on the left shows the global profiles and the profiles of the project the
 // focused terminal is in, the selected one in full on the right. Enter edits
-// it, a adds, c copies, d deletes, r drops a project override, j lists the
-// harnesses on this machine, Esc closes.
+// it, a adds, c copies, d deletes, r drops a project override, [ and ] move it
+// up or down its group (so do the Up and Down buttons beside its name), j lists
+// the harnesses on this machine, k manages stored API keys, Esc closes.
 //
 // Every read and write goes through `herdr-loadout editor <action>`, the CLI's
 // JSON backend, so this editor follows the same rules as the terminal one.
@@ -12,7 +13,7 @@
 // orders) are written by the installer, scripts/install-app-mod.mjs.
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { exec, focused, spaces, home, theme, settings, props, closeOverlay } from "herdr";
 import { CLI } from "./cli.js";
 import { pickerView, nextSort, SORT_LABELS } from "./picker.js";
@@ -23,22 +24,29 @@ const CLOSE_ICON = "mods/workspace-chrome/x.svg";
 const CHEVRON_ICON = "mods/workspace-chrome/chevron-down.svg";
 const CHECK_ICON = "mods/workspace-chrome/check.svg";
 const SEARCH_ICON = "mods/workspace-chrome/search.svg";
-const ROW = { head: 32, profile: 50, empty: 28, fieldHead: 32, field: 38, option: 30, harness: 62 };
+const ROW = { head: 32, profile: 50, empty: 28, fieldHead: 36, field: 40, name: 70, long: 78, option: 30, harness: 62, key: 58 };
 
-/** Which group each editor field sits under. */
+/** Fields whose text is a sentence or two: shown wrapped, typed in a textarea. */
+const LONG_FIELDS = new Set(["when_to_use", "avoid_when"]);
+
+/** Which group each editor field sits under; the name heads the page on its own. */
 const GROUP_OF = {
-  name: "Profile",
+  name: null,
   harness: "Launch",
+  api: "Launch",
+  auth: "Launch",
   model: "Launch",
   effort: "Launch",
-  sandbox: "Permissions",
-  approval_policy: "Permissions",
-  permission_mode: "Permissions",
+  // Permissions are part of how the worker starts, not a section of their own.
+  sandbox: "Launch",
+  approval_policy: "Launch",
+  permission_mode: "Launch",
   cost: "Routing",
   when_to_use: "Routing",
   avoid_when: "Routing",
-  // The editor lists extra args before tags, so both sit in the last group.
+  // The editor lists extra args, env, then tags, so all three sit in the last group.
   extra_args: "More",
+  env: "More",
   tags: "More",
 };
 
@@ -156,6 +164,26 @@ export default class Profiles extends View {
     });
     this.filter.on("submit", (_e, cx) => this.applyOption(cx));
 
+    // When and Avoid are a sentence or two: typed in a textarea that wraps.
+    this.area = TextareaState.new({});
+    this.area.set_rows(3);
+    this.area.on("blur", (_e, cx) => this.commitText(cx));
+    this.area.on("submit", (_e, cx) => this.commitText(cx));
+
+    // API keys page
+    this.keys = null; // the `keys` answer
+    this.keySelected = 0;
+    this.keyForm = null; // { provider } while adding a key
+    this.keyPending = null; // the key waiting for y to delete it
+    this.keyMessage = null;
+    this.keyTests = {};
+    this.keyStrip = new Strip();
+    this.keySecret = InputState.new({ placeholder: "Paste the API key" });
+    this.keySecret.set_masked(true);
+    this.keyId = InputState.new({ placeholder: "Defaults to the provider id" });
+    this.keyLabel = InputState.new({ placeholder: "Optional: personal, work…" });
+    for (const input of [this.keySecret, this.keyId, this.keyLabel]) input.on("submit", (_e, cx) => this.saveKeyForm(cx));
+
     this.handle.focus();
     // The dialog takes the keyboard a moment after it opens.
     cx.timer.after(600, () => this.focusNow());
@@ -242,6 +270,23 @@ export default class Profiles extends View {
     });
   }
 
+  /** Move the selected profile one place within its group; the selection follows it. */
+  move(cx, direction) {
+    const p = this.profile();
+    if (!p) return;
+    this.pending = null;
+    this.task(cx, async (cx) => {
+      const r = await this.call("move", { id: p.id, direction });
+      if (!r.ok) {
+        this.message = { text: r.error, ok: false };
+        return;
+      }
+      this.selected = r.index;
+      if (r.moved) this.reload(cx, { text: r.message, ok: true });
+      else this.message = { text: r.message, ok: true };
+    });
+  }
+
   // ---- editor ----
 
   open(cx, mode) {
@@ -292,12 +337,11 @@ export default class Profiles extends View {
     const ed = this.ed;
     if (!ed) return;
     const seq = ++ed.seq;
-    const harness = ed.draft.harness ?? "claude";
     const r = await this.call("view", {
       draft: ed.draft,
       kind: ed.kind,
       baseline: ed.baseline,
-      catalogError: this.catalogErrors[harness] ?? null,
+      catalogError: ed.catalog ? this.catalogErrors[ed.catalog] ?? null : null,
       ...change,
     });
     if (this.ed !== ed || seq !== ed.seq) return;
@@ -306,29 +350,33 @@ export default class Profiles extends View {
       return;
     }
     ed.draft = r.draft;
+    ed.catalog = r.catalog;
     ed.fields = r.fields;
     ed.dirty = r.dirty;
     ed.cursor = Math.min(ed.cursor, Math.max(0, r.fields.length - 1));
     if (r.status) ed.status = { text: r.status, ok: true };
-    if (!r.catalogReady) this.loadCatalog(r.draft.harness ?? "claude", cx);
+    if (!r.catalogReady) this.loadCatalog(r.catalog, cx);
   }
 
-  /** Read a harness's model list once per session, then show the fields again. */
-  loadCatalog(harness, cx) {
-    if (this.catalogAsked.has(harness)) return;
-    this.catalogAsked.add(harness);
-    const showing = () => this.ed && (this.ed.draft.harness ?? "claude") === harness;
+  /**
+   * Read a model list once per session, then show the fields again. The id is
+   * a harness, or a variant such as `agy-api` (agy through the Gemini API).
+   */
+  loadCatalog(catalog, cx) {
+    if (this.catalogAsked.has(catalog)) return;
+    this.catalogAsked.add(catalog);
+    const showing = () => this.ed?.catalog === catalog;
     this.task(cx, async (cx) => {
-      const r = await this.call("models", { harness });
-      if (r.ok) this.catalogCounts[harness] = r.count;
-      else this.catalogErrors[harness] = r.error;
+      const r = await this.call("models", { catalog });
+      if (r.ok) this.catalogCounts[catalog] = r.count;
+      else this.catalogErrors[catalog] = r.error;
       if (showing()) await this.view({}, cx);
       // A cached list can predate a provider login or logout, so read the CLI
       // once more behind it. A failed read keeps the cached rows.
       if (r.ok && r.revalidate) {
-        const fresh = await this.call("models", { harness, refresh: true });
+        const fresh = await this.call("models", { catalog, refresh: true });
         if (fresh.ok) {
-          this.catalogCounts[harness] = fresh.count;
+          this.catalogCounts[catalog] = fresh.count;
           if (showing()) await this.view({}, cx);
         }
       }
@@ -364,10 +412,16 @@ export default class Profiles extends View {
       this.focusNow();
     } else {
       ed.mode = "type";
-      this.text.set_value(f.text);
-      this.text.focus();
+      const input = this.inputFor(f);
+      input.set_value(f.text);
+      input.focus();
     }
     cx.notify();
+  }
+
+  /** The text input a field is typed into. */
+  inputFor(f) {
+    return f && LONG_FIELDS.has(f.field) ? this.area : this.text;
   }
 
   shownOptions() {
@@ -418,7 +472,8 @@ export default class Profiles extends View {
     const ed = this.ed;
     if (!ed || ed.mode !== "type") return;
     const f = this.field();
-    const value = this.text.value();
+    // A newline has no meaning in these fields; Enter in the textarea adds one.
+    const value = this.inputFor(f).value().replace(/\s*\n\s*/g, " ").trim();
     if (value === f.text) {
       // Nothing typed: leave the field without a round trip.
       ed.mode = "fields";
@@ -486,12 +541,142 @@ export default class Profiles extends View {
     cx.notify();
   }
 
+  // ---- API keys ----
+
+  showKeys(cx) {
+    this.page = "keys";
+    this.message = null;
+    this.keyForm = null;
+    this.keyPending = null;
+    this.reloadKeys(cx);
+    this.focusNow();
+    cx.notify();
+  }
+
+  reloadKeys(cx, message = null) {
+    this.task(cx, async () => {
+      const r = await this.call("keys");
+      if (!r.ok) {
+        this.keyMessage = { text: r.error, ok: false };
+        return;
+      }
+      this.keys = r;
+      this.keySelected = Math.max(0, Math.min(this.keySelected, r.keys.length - 1));
+      this.keyStrip.reveal();
+      if (message) this.keyMessage = message;
+    });
+  }
+
+  selectedKey() {
+    return this.keys?.keys[this.keySelected] ?? null;
+  }
+
+  openKeyForm(cx, provider = null) {
+    const providers = this.keys?.providers ?? [];
+    // Offer a provider that has no key yet first.
+    const fresh = providers.find((entry) => !(this.keys?.keys ?? []).some((key) => key.provider === entry.id));
+    this.keyForm = { provider: provider ?? fresh?.id ?? providers[0]?.id };
+    this.keyPending = null;
+    this.keyMessage = null;
+    for (const input of [this.keySecret, this.keyId, this.keyLabel]) input.set_value("");
+    this.keySecret.focus();
+    cx.notify();
+  }
+
+  closeKeyForm() {
+    this.keyForm = null;
+    this.keySecret.set_value("");
+    this.focusNow();
+  }
+
+  saveKeyForm(cx) {
+    const form = this.keyForm;
+    if (!form || this.busy) return;
+    const input = {
+      provider: form.provider,
+      id: this.keyId.value().trim() || form.provider,
+      key: this.keySecret.value().trim(),
+      label: this.keyLabel.value().trim(),
+    };
+    this.task(cx, async (cx) => {
+      const r = await this.call("key.save", input);
+      if (!r.ok) {
+        this.keyMessage = { text: r.error, ok: false };
+        return;
+      }
+      this.closeKeyForm();
+      this.reloadKeys(cx, { text: `Stored "${r.id}". Pick it in a profile's API field.`, ok: true });
+    });
+  }
+
+  testKey(cx) {
+    const key = this.selectedKey();
+    if (!key) return;
+    this.keyTests[key.id] = { pending: true };
+    this.keyMessage = { text: `Asking ${key.providerLabel} about "${key.id}"…`, ok: true };
+    this.task(cx, async () => {
+      const r = await this.call("key.test", { id: key.id });
+      const detail = r.detail ?? r.error ?? "no answer";
+      this.keyTests[key.id] = { ok: r.ok };
+      this.keyMessage = { text: `${key.id}: ${detail}`, ok: r.ok };
+    });
+  }
+
+  answerKey(cx, yes) {
+    const key = this.keyPending;
+    this.keyPending = null;
+    if (!yes || !key) {
+      cx.notify();
+      return;
+    }
+    this.task(cx, async (cx) => {
+      const r = await this.call("key.remove", { id: key.id });
+      if (!r.ok) {
+        this.keyMessage = { text: r.error, ok: false };
+        return;
+      }
+      this.keySelected = Math.max(0, this.keySelected - 1);
+      this.reloadKeys(cx, { text: `Removed "${key.id}"`, ok: true });
+    });
+  }
+
+  keysKey(k, cx) {
+    if (this.keyPending) {
+      if (k === "y") this.answerKey(cx, true);
+      else if (k === "n" || k === "escape") this.answerKey(cx, false);
+      else return false;
+      return true;
+    }
+    if (this.keyForm) {
+      if (k !== "escape") return false; // the inputs take the rest; Enter saves
+      this.closeKeyForm();
+      return true;
+    }
+    const count = this.keys?.keys.length ?? 0;
+    if (k === "escape" || k === "k") {
+      this.page = "list";
+      this.keyMessage = null;
+    } else if (k === "down" && count) this.keySelected = Math.min(count - 1, this.keySelected + 1);
+    else if (k === "up" && count) this.keySelected = Math.max(0, this.keySelected - 1);
+    else if (k === "a") this.openKeyForm(cx);
+    else if (k === "t" && count) this.testKey(cx);
+    else if (k === "d" && count) {
+      this.keyPending = this.selectedKey();
+      this.keyMessage = null;
+    } else return false;
+    this.keyStrip.reveal();
+    return true;
+  }
+
   // ---- keys ----
 
   focusNow() {
+    // The key form keeps its inputs focused; the page handles keys otherwise.
+    if (this.page === "keys" && this.keyForm) return;
     this.handle.focus();
+    if (this.page !== "edit") return;
     if (this.ed?.mode === "pick" && this.filtering()) this.filter.focus();
-    if (this.ed?.mode === "type") this.text.focus();
+    if (this.ed?.mode === "type") this.inputFor(this.field()).focus();
   }
 
   dismiss() {
@@ -500,7 +685,11 @@ export default class Profiles extends View {
 
   key(e, cx) {
     const k = e.key;
-    const handled = this.page === "edit" && this.ed ? this.editKey(k, cx) : this.page === "detect" ? this.detectKey(k, cx) : this.listKey(k, cx);
+    const handled =
+      this.page === "edit" && this.ed ? this.editKey(k, cx)
+      : this.page === "detect" ? this.detectKey(k, cx)
+      : this.page === "keys" ? this.keysKey(k, cx)
+      : this.listKey(k, cx);
     if (handled) {
       cx.stop_propagation();
       cx.notify();
@@ -525,7 +714,10 @@ export default class Profiles extends View {
     else if (k === "c" && count) this.open(cx, "copy");
     else if (k === "d" && count) this.ask(cx, "delete");
     else if (k === "r" && count) this.ask(cx, "reset");
+    else if (k === "[" && count) this.move(cx, "up");
+    else if (k === "]" && count) this.move(cx, "down");
     else if (k === "j") this.showHarnesses(cx);
+    else if (k === "k") this.showKeys(cx);
     else return false;
     this.listStrip.reveal();
     return true;
@@ -671,7 +863,11 @@ export default class Profiles extends View {
   }
 
   header(t) {
-    const title = this.page === "detect" ? "Harnesses" : this.page === "edit" && this.ed ? (this.ed.draft.id ? `Edit ${this.ed.draft.id}` : "New profile") : "Agent Profiles";
+    const title =
+      this.page === "detect" ? "Harnesses"
+      : this.page === "keys" ? "API keys"
+      : this.page === "edit" && this.ed ? (this.ed.draft.id ? `Edit ${this.ed.draft.id}` : "New profile")
+      : "Agent Profiles";
     const project = this.project.split(/[\\/]/).filter(Boolean).pop() ?? this.project;
     return h_flex()
       .flex_none()
@@ -693,7 +889,7 @@ export default class Profiles extends View {
               .child(div().text_size(14.5).font_semibold().text_color(t.foreground).child(title))
               .when(this.page === "edit" && Boolean(this.ed?.dirty), (el) => el.child(div().text_size(11.5).text_color(t.ansi3).child("● unsaved"))),
           )
-          .child(div().truncate().text_size(11.5).text_color(t.dim).child(`project ${project} · ${this.project}`)),
+          .child(div().truncate().text_size(11.5).text_color(t.dim).child(this.page === "keys" ? this.keys?.path ?? "" : `project ${project}`)),
       )
       .when(this.busy > 0, (el) => el.child(svg(SPINNER).size(14).flex_none().text_color(t.working).spin(900)))
       .child(
@@ -823,14 +1019,20 @@ export default class Profiles extends View {
     }
     const installed = detected.get(p.harness);
     const origin = { global: ["Global", t.muted], "project-override": ["Project override", t.ansi5], "project-only": ["This project", t.ansi5] }[p.origin] ?? ["Global", t.muted];
+    // A profile moves only among the profiles of its own group (global or this project).
+    const group = this.registry.profiles.filter((q) => (q.origin === "project-only") === (p.origin === "project-only"));
+    const place = group.indexOf(p);
     const permissions = [p.sandbox, p.approval_policy, p.permission_mode].filter(Boolean).join(" · ");
     const facts = [
       ["Harness", p.harness],
+      ["API", p.api ? `${p.api} (stored key)` : p.harness === "agy" && p.auth === "api-key" ? "GEMINI_API_KEY from the environment" : ""],
       ["Model", p.model],
       ["Effort", p.effort],
       ["Permissions", permissions || "inherit"],
       ["Tags", (p.tags ?? []).join(", ")],
       ["Extra args", (p.extra_args ?? []).join(" ")],
+      // The registry masks env values; only the names are shown.
+      ["Env", Object.keys(p.env ?? {}).map((key) => `${key}=***`).join(" ")],
     ].filter(([, value]) => value);
     const block = (label, text, color) =>
       v_flex()
@@ -856,7 +1058,9 @@ export default class Profiles extends View {
               .min_w(0)
               .child(div().truncate().text_size(17).font_semibold().text_color(t.foreground).child(p.name ?? p.id))
               .child(div().text_size(12).text_color(t.dim).child(p.id)),
-          ),
+          )
+          .child(this.button(t, "lo-up", "[", "Up", (cx) => this.move(cx, "up"), { enabled: place > 0 }))
+          .child(this.button(t, "lo-down", "]", "Down", (cx) => this.move(cx, "down"), { enabled: place < group.length - 1 })),
       )
       .child(
         h_flex()
@@ -911,64 +1115,76 @@ export default class Profiles extends View {
           this.button(t, "lo-del", "d", "Delete", (cx) => this.ask(cx, "delete"), { enabled: Boolean(p) }),
           ...(p?.origin === "project-override" ? [this.button(t, "lo-reset", "r", "Reset override", (cx) => this.ask(cx, "reset"))] : []),
           this.button(t, "lo-detect", "j", "Harnesses", (cx) => this.showHarnesses(cx)),
+          this.button(t, "lo-keys", "k", "API keys", (cx) => this.showKeys(cx)),
         ];
     return this.footer(t, left, [this.button(t, "lo-edit", "Enter", "Edit", (cx) => this.open(cx, "edit"), { primary: true, enabled: Boolean(p) })]);
   }
 
   // -- editor --
 
-  scope(t) {
-    const ed = this.ed;
-    const [label, color, text] = {
-      project: ["This project", t.ansi5, "Saves to this project's file."],
-      global: ["Global", t.muted, "g saves for every project · p saves an override for this one."],
-      override: ["Project override", t.ansi5, "≠ marks what this project changes · g edits global · p edits the override."],
-      new: ["New", t.accent, "g saves to global · p saves to this project."],
-    }[ed.kind];
-    return h_flex()
-      .flex_none()
-      .gap(10)
-      .items_center()
-      .child(this.pill(t, label, color))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(text));
+  /** Where a save goes, as a label and its color. */
+  scopeOf(t) {
+    return {
+      project: ["This project", t.ansi5],
+      global: ["Global", t.muted],
+      override: ["Project override", t.ansi5],
+      new: ["New", t.accent],
+    }[this.ed.kind];
   }
 
-  /** The choices of a short list as a row of buttons; one click sets the field. */
-  choiceButtons(t, f, index, options) {
-    const ed = this.ed;
+  /**
+   * Choices joined into one control; the chosen one is filled. `onPick(cx, id)`
+   * runs for a choice that is not the current one.
+   */
+  segmentedControl(t, id, options, value, onPick, { icons = false, active = false } = {}) {
     return h_flex()
-      .flex_1()
-      .min_w(0)
-      .gap(4)
-      .items_center()
+      .flex_none()
+      .h(30)
+      .rounded(7)
+      .border_1()
+      .border_color(active ? t.accent : t.border)
+      .bg(t.background)
+      .overflow_hidden()
       .children(
-        options.map((option) => {
-          const chosen = option.id === f.value;
-          return div()
-            .id(`lo-c-${f.field}-${option.id}`)
+        options.map((option, i) => {
+          const chosen = option.id === value;
+          return h_flex()
+            .id(`${id}-${option.id}`)
             .on_mouse_down("left", keepPress)
-            .flex_none()
-            .h(28)
-            .px(10)
-            .flex()
+            .h_full()
+            .px(icons ? 9 : 11)
+            .gap(6)
             .items_center()
-            .rounded(7)
-            .border_1()
-            .border_color(chosen ? t.accent : t.border)
+            .when(i > 0, (el) => el.border_l_1().border_color(t.border))
             .text_size(12)
             .text_color(chosen ? t.foreground : t.muted)
-            .when(chosen, (el) => el.bg(t.selected))
-            .when(!chosen, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
+            .when(chosen, (el) => el.bg(t.selected).font_semibold())
+            .when(!chosen, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)))
             .on_click((_e, cx) => {
               if (this.busy) return;
-              this.leaveTyping(cx);
-              ed.cursor = index;
-              if (!chosen) this.change(cx, { set: { field: f.field, value: option.id } });
+              if (!chosen) onPick(cx, option.id);
               cx.notify();
             })
-            .child(option.id);
+            .when(icons, (el) => el.child(harnessIcon(t, option.id, 13)))
+            .child(option.label ?? option.id);
         }),
       );
+  }
+
+  /** A short list of a field's choices, set with one click. */
+  choiceButtons(t, f, index, options, active) {
+    return this.segmentedControl(
+      t,
+      `lo-c-${f.field}`,
+      options.map((option) => ({ id: option.id })),
+      f.value,
+      (cx, id) => {
+        this.leaveTyping(cx);
+        this.ed.cursor = index;
+        this.change(cx, { set: { field: f.field, value: id } });
+      },
+      { icons: f.field === "harness", active },
+    );
   }
 
   /** Put one field back to its global value. */
@@ -996,16 +1212,97 @@ export default class Profiles extends View {
       .child("↺");
   }
 
+  /** Click on a field row: open it, or close the one already open. */
+  clickField(cx, f, index) {
+    const ed = this.ed;
+    const on = index === ed.cursor;
+    if (this.busy || (on && ed.mode === "type")) return;
+    this.leaveTyping(cx);
+    const open = on && ed.mode === "pick";
+    ed.cursor = index;
+    ed.mode = "fields";
+    ed.status = null;
+    if (!open && !this.segments(f)) this.openField(cx);
+    else this.focusNow();
+    cx.notify();
+  }
+
+  /** The page's head: harness icon, the name as a title, the id and where it saves. */
+  nameRow(t, f, index, revertable) {
+    const ed = this.ed;
+    const on = index === ed.cursor;
+    const typing = on && ed.mode === "type";
+    const [scope, scopeColor] = this.scopeOf(t);
+    return h_flex()
+      .id("lo-f-name")
+      .on_mouse_down("left", keepPress)
+      .px(4)
+      .gap(14)
+      .items_center()
+      .cursor_pointer()
+      .on_click((_e, cx) => this.clickField(cx, f, index))
+      .child(
+        div()
+          .flex_none()
+          .size(46)
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(10)
+          .bg(t.background)
+          .border_1()
+          .border_color(t.border)
+          .child(harnessIcon(t, ed.draft.harness, 24)),
+      )
+      .child(
+        v_flex()
+          .flex_1()
+          .min_w(0)
+          .gap(3)
+          .child(
+            h_flex()
+              .h(34)
+              .px(8)
+              .items_center()
+              .rounded(7)
+              .border_1()
+              .border_color(on ? t.accent : t.popover)
+              .hover((st) => st.border_color(on ? t.accent : t.border))
+              .child(
+                typing
+                  ? Input.new(this.text).flex_1().h_full().text_size(16).text_color(t.foreground)
+                  : div().flex_1().min_w(0).truncate().text_size(16).font_semibold().text_color(f.value ? t.foreground : t.dim).child(f.value || "Name this profile"),
+              ),
+          )
+          .child(
+            h_flex()
+              .px(9)
+              .gap(8)
+              .items_center()
+              .child(div().flex_none().text_size(11.5).text_color(t.dim).child(ed.draft.id || "id follows the name"))
+              .child(this.pill(t, scope, scopeColor))
+              .when(f.differs, (el) => el.child(div().text_size(11.5).text_color(t.ansi5).child("≠ global name"))),
+          ),
+      )
+      .when(revertable, (el) => el.child(f.differs ? this.revertButton(t, f) : div().flex_none().w(26)));
+  }
+
   editPage(t) {
     const ed = this.ed;
     const picking = ed.mode === "pick";
     const rows = [];
     let group = null;
     ed.fields.forEach((f, i) => {
-      const g = GROUP_OF[f.field] ?? "More";
-      if (g !== group) rows.push({ kind: "head", label: g, h: ROW.fieldHead });
-      group = g;
-      rows.push({ kind: "field", f, i, h: ROW.field });
+      // While a list is open only its field shows above it.
+      if (picking) {
+        if (i === ed.cursor) rows.push({ kind: "field", f, i, h: ROW.field });
+        return;
+      }
+      const g = GROUP_OF[f.field] === undefined ? "More" : GROUP_OF[f.field];
+      if (g && g !== group) rows.push({ kind: "head", label: g, h: ROW.fieldHead });
+      if (g) group = g;
+      const h = f.field === "name" ? ROW.name : LONG_FIELDS.has(f.field) ? ROW.long : ROW.field;
+      rows.push({ kind: "field", f, i, h });
     });
     const selectedRow = rows.findIndex((r) => r.kind === "field" && r.i === ed.cursor);
     // Global and override drafts can put a field back to its global value.
@@ -1013,74 +1310,80 @@ export default class Profiles extends View {
 
     const draw = (r) => {
       if (r.kind === "head") {
-        return div().px(4).pt(10).text_size(11).font_semibold().text_color(t.dim).child(r.label.toUpperCase());
+        return h_flex()
+          .px(4)
+          .pt(14)
+          .gap(10)
+          .items_center()
+          .child(div().flex_none().text_size(11).font_semibold().text_color(t.dim).child(r.label.toUpperCase()))
+          .child(div().flex_1().h(1).bg(t.border));
       }
       const f = r.f;
+      if (f.field === "name" && !picking) return this.nameRow(t, f, r.i, revertable);
       const on = r.i === ed.cursor;
       const typing = on && ed.mode === "type";
+      const long = LONG_FIELDS.has(f.field);
       const segments = this.segments(f);
+      const empty = !f.value;
+      // An empty field draws no frame until it is the current one, so unset
+      // extras stay quiet; a set value sits in a box.
       const box = (child) =>
         h_flex()
           .flex_1()
           .min_w(0)
-          .h(30)
+          .h(long ? ROW.long - 10 : 30)
           .px(10)
           .gap(8)
-          .items_center()
+          .when(long, (el) => el.items_start().py(6))
+          .when(!long, (el) => el.items_center())
           .rounded(7)
           .border_1()
-          .border_color(on ? t.accent : t.border)
-          .bg(t.background)
+          .border_color(on ? t.accent : empty ? t.popover : t.border)
+          .bg(empty && !on ? t.popover : t.background)
+          .hover((st) => st.border_color(on ? t.accent : t.input))
           .child(child)
           .when(Boolean(f.options) && !typing, (el) => el.child(svg(CHEVRON_ICON).size(13).flex_none().text_color(on ? t.accent : t.dim)));
+      const shown = long
+        ? div().flex_1().min_w(0).h_full().overflow_hidden().whitespace_normal().text_size(12.5).line_height("19px").text_color(empty ? t.dim : t.foreground).child(f.value || "Add…")
+        : div().flex_1().min_w(0).truncate().text_size(12.5).text_color(empty ? t.dim : t.foreground).child(f.value || (f.options ? "Choose…" : "Add…"));
       return h_flex()
         .id(`lo-f-${f.field}`)
         .on_mouse_down("left", keepPress)
         .px(4)
         .gap(12)
-        .items_center()
+        .when(long, (el) => el.items_start().pt(4))
+        .when(!long, (el) => el.items_center())
         .cursor_pointer()
-        .on_click((_e, cx) => {
-          if (this.busy || (on && ed.mode === "type")) return;
-          this.leaveTyping(cx);
-          // A click opens the field; a click on the open one closes it.
-          const open = on && ed.mode === "pick";
-          ed.cursor = r.i;
-          ed.mode = "fields";
-          ed.status = null;
-          if (!open && !this.segments(f)) this.openField(cx);
-          else this.focusNow();
-          cx.notify();
-        })
+        .on_click((_e, cx) => this.clickField(cx, f, r.i))
         .child(
           h_flex()
             .flex_none()
-            .w(150)
+            .w(124)
             .gap(6)
+            .when(long, (el) => el.pt(7))
             .items_center()
             .child(div().text_size(12.5).text_color(on ? t.foreground : t.muted).child(f.label))
             .when(f.differs, (el) => el.child(div().text_size(11.5).text_color(t.ansi5).child("≠"))),
         )
         .child(
           segments
-            ? this.choiceButtons(t, f, r.i, segments)
+            ? h_flex().flex_1().min_w(0).child(this.choiceButtons(t, f, r.i, segments, on))
             : typing
-              ? box(Input.new(this.text).flex_1().h_full().text_size(12.5).text_color(t.foreground))
-              : box(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(f.value ? t.foreground : t.dim).child(f.value || "not set")),
+              ? box(long ? Textarea.new(this.area).flex_1().h_full().text_size(12.5).text_color(t.foreground) : Input.new(this.text).flex_1().h_full().text_size(12.5).text_color(t.foreground))
+              : box(shown),
         )
         .when(revertable, (el) => el.child(f.differs ? this.revertButton(t, f) : div().flex_none().w(26)));
     };
 
-    const fieldsHeight = picking ? Math.min(rows.length, 4) * ROW.field : this.fieldHeight;
+    const fieldsHeight = picking ? ROW.field : this.fieldHeight;
     const fields = this.fieldStrip.render("lo-fields", rows, fieldsHeight, selectedRow, draw);
     return v_flex()
       .flex_1()
       .min_h(0)
       .px(20)
-      .pt(16)
+      .pt(14)
       .pb(8)
       .gap(10)
-      .child(this.scope(t))
       .child(picking ? v_flex().flex_none().child(fields) : this.measured("lo-fields-box", "fieldHeight", fields))
       .when(picking, (el) => el.child(this.pickerPanel(t)));
   }
@@ -1118,7 +1421,7 @@ export default class Profiles extends View {
       .flex_none()
       .gap(8)
       .items_center()
-      .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child(`Choose ${f.label.toLowerCase()}`))
+      .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child(`Choose ${/^[A-Z]+$/.test(f.label) ? f.label : f.label.toLowerCase()}`))
       .child(div().flex_1())
       .when(shown.length > 1, (el) =>
         el.child(
@@ -1238,6 +1541,189 @@ export default class Profiles extends View {
     );
   }
 
+  // -- API keys --
+
+  keysPage(t) {
+    const reg = this.keys;
+    if (!reg) {
+      return v_flex().flex_1().items_center().justify_center().text_size(13).text_color(t.dim).child("Reading keys…");
+    }
+    const rows = reg.keys.map((key, i) => ({ key, i, h: ROW.key }));
+    const draw = (r) => {
+      const key = r.key;
+      const on = r.i === this.keySelected;
+      const test = this.keyTests[key.id];
+      const used = key.profiles.length ? `used by ${key.profiles.join(", ")}` : "no profile uses it yet";
+      return h_flex()
+        .id(`lo-k-${key.id}`)
+        .on_mouse_down("left", keepPress)
+        .mx(2)
+        .px(12)
+        .gap(12)
+        .items_center()
+        .rounded(8)
+        .cursor_pointer()
+        .when(on, (el) => el.bg(t.selected))
+        .when(!on, (el) => el.hover((st) => st.bg(t.hover)))
+        .on_click((_e, cx) => {
+          this.keySelected = r.i;
+          this.keyPending = null;
+          cx.notify();
+        })
+        .child(h_flex().flex_none().gap(2).children(key.harnesses.map((harness) => harnessIcon(t, harness, 20))))
+        .child(
+          v_flex()
+            .flex_1()
+            .min_w(0)
+            .gap(2)
+            .child(
+              h_flex()
+                .gap(10)
+                .items_center()
+                .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child(key.id))
+                .child(div().flex_none().text_size(12).text_color(t.muted).child(key.masked))
+                .when(Boolean(key.label), (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(key.label))),
+            )
+            .child(div().truncate().text_size(11.5).text_color(t.dim).child(`${key.providerLabel} · runs ${key.harnesses.join(", ")} · ${used}`)),
+        )
+        .when(Boolean(test), (el) =>
+          el.child(
+            test.pending
+              ? svg(SPINNER).size(13).flex_none().text_color(t.working).spin(900)
+              : this.pill(t, test.ok ? "works" : "failed", test.ok ? t.ansi2 : t.blocked),
+          ),
+        );
+    };
+    const intro = v_flex()
+      .flex_none()
+      .gap(6)
+      .p(16)
+      .rounded(10)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.background)
+      .child(div().text_size(13).font_semibold().text_color(t.foreground).child("No stored keys"))
+      .child(
+        div()
+          .whitespace_normal()
+          .text_size(12)
+          .line_height("18px")
+          .text_color(t.muted)
+          .child("Store a provider's key once, then choose it in a profile's API field. A Claude profile then runs on DeepSeek's Anthropic-compatible API; an agy profile on the Gemini API. Keys stay in keys.toml beside the global config, never in a project."),
+      );
+    return v_flex()
+      .flex_1()
+      .min_h(0)
+      .px(20)
+      .pt(16)
+      .pb(8)
+      .gap(14)
+      .when(reg.keys.length === 0 && !this.keyForm, (el) => el.child(intro))
+      .when(reg.keys.length > 0, (el) => el.child(this.measured("lo-keys", "keysHeight", this.keyStrip.render("lo-keys-strip", rows, this.keysHeight ?? 200, this.keySelected, draw))))
+      .when(Boolean(this.keyForm), (el) => el.child(this.keyFormCard(t)));
+  }
+
+  keyFormCard(t) {
+    const form = this.keyForm;
+    const providers = this.keys?.providers ?? [];
+    const provider = providers.find((entry) => entry.id === form.provider) ?? providers[0];
+    const line = (label, child) =>
+      h_flex()
+        .gap(12)
+        .items_center()
+        .child(div().flex_none().w(84).text_size(12.5).text_color(t.muted).child(label))
+        .child(child);
+    const input = (id, state) =>
+      h_flex()
+        .id(id)
+        .on_mouse_down("left", keepPress)
+        .flex_1()
+        .min_w(0)
+        .h(30)
+        .px(10)
+        .items_center()
+        .rounded(7)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.background)
+        .child(Input.new(state).flex_1().h_full().text_size(12.5).text_color(t.foreground));
+    return v_flex()
+      .flex_none()
+      .gap(10)
+      .p(16)
+      .rounded(10)
+      .border_1()
+      .border_color(t.accent)
+      .bg(t.background)
+      .child(div().text_size(13).font_semibold().text_color(t.foreground).child("Add an API key"))
+      .child(
+        line(
+          "Provider",
+          this.segmentedControl(
+            t,
+            "lo-kp",
+            providers.map((entry) => ({ id: entry.id, label: entry.label })),
+            form.provider,
+            (cx, id) => {
+              this.keyForm.provider = id;
+              this.keySecret.focus();
+              cx.notify();
+            },
+          ),
+        ),
+      )
+      .when(Boolean(provider), (el) =>
+        el.child(
+          div()
+            .pl(96)
+            .text_size(11.5)
+            .text_color(t.dim)
+            .child(`Runs ${provider.harnesses.join(", ")} · keys from ${provider.site}`),
+        ),
+      )
+      .child(line("Key", input("lo-k-secret", this.keySecret)))
+      .child(line("ID", input("lo-k-id", this.keyId)))
+      .child(line("Label", input("lo-k-label", this.keyLabel)));
+  }
+
+  keysFooter(t) {
+    if (this.keyPending) {
+      const users = this.keyPending.profiles.length ? ` ${this.keyPending.profiles.join(", ")} will stop launching.` : "";
+      return this.footer(
+        t,
+        [div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.blocked).child(`Delete key "${this.keyPending.id}"?${users}`)],
+        [
+          this.button(t, "lo-k-no", "n", "Cancel", (cx) => this.answerKey(cx, false)),
+          this.button(t, "lo-k-yes", "y", "Delete", (cx) => this.answerKey(cx, true), { primary: true }),
+        ],
+      );
+    }
+    const status = this.keyMessage ? [this.statusLine(t, this.keyMessage)] : [];
+    if (this.keyForm) {
+      return this.footer(t, status, [
+        this.button(t, "lo-k-cancel", "Esc", "Cancel", () => this.closeKeyForm()),
+        this.button(t, "lo-k-save", "Enter", "Save key", (cx) => this.saveKeyForm(cx), { primary: true }),
+      ]);
+    }
+    const any = (this.keys?.keys.length ?? 0) > 0;
+    return this.footer(
+      t,
+      [
+        this.button(t, "lo-k-back", "Esc", "Back", (cx) => {
+          this.page = "list";
+          this.keyMessage = null;
+          cx.notify();
+        }),
+        ...status,
+      ],
+      [
+        ...(any ? [this.button(t, "lo-k-del", "d", "Delete", (cx) => this.keysKey("d", cx) && cx.notify())] : []),
+        ...(any ? [this.button(t, "lo-k-test", "t", "Test", (cx) => this.testKey(cx))] : []),
+        this.button(t, "lo-k-add", "a", "Add key", (cx) => this.openKeyForm(cx), { primary: true }),
+      ],
+    );
+  }
+
   // -- harnesses --
 
   detectPage(t) {
@@ -1281,11 +1767,13 @@ export default class Profiles extends View {
   render(cx) {
     const t = theme();
     const page = this.page === "edit" && this.ed ? "edit" : this.page;
-    const body = page === "edit" ? this.editPage(t) : page === "detect" ? this.detectPage(t) : this.listPage(t);
+    const body = page === "edit" ? this.editPage(t) : page === "detect" ? this.detectPage(t) : page === "keys" ? this.keysPage(t) : this.listPage(t);
     const footer =
       page === "edit"
         ? this.editFooter(t)
-        : page === "detect"
+        : page === "keys"
+          ? this.keysFooter(t)
+          : page === "detect"
           ? this.footer(t, [], [this.button(t, "lo-detect-back", "Esc", "Back", (cx) => {
               this.page = "list";
               cx.notify();

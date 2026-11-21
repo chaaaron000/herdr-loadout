@@ -40,8 +40,38 @@ test("an expired snapshot still answers for claude, and the rows are cached", as
     fs.rmSync(path.join(dir, "models-dev.json"));
     const second = await listModelsAsync("claude", { env, offline: true });
     assert.equal(second.cached, true);
-    assert.equal(second.revalidate, undefined, "derived rows do not follow a login");
+    assert.equal(second.revalidate, true, "rows from an expired snapshot ask to be read again");
     assert.deepEqual(second.models.map((model) => model.id), first.models.map((model) => model.id));
+  });
+});
+
+test("rows from a fresh snapshot do not ask to be read again", async () => {
+  await withSnapshot(0, async ({ env }) => {
+    const first = await listModelsAsync("claude", { env, offline: true });
+    assert.equal(first.revalidate, undefined);
+    const second = await listModelsAsync("claude", { env, offline: true });
+    assert.equal(second.cached, true);
+    assert.equal(second.revalidate, undefined);
+  });
+});
+
+test("a refresh waits for a new snapshot and lists the models it adds", async () => {
+  const newer = sampleCatalog();
+  newer.anthropic.models["claude-fable-9"] = { id: "claude-fable-9", name: "Claude Fable 9" };
+  const fetchImpl = async () => ({ ok: true, json: async () => newer });
+  await withSnapshot(CATALOG_TTL_MS + 1000, async ({ env }) => {
+    const cached = await listModelsAsync("claude", { env, offline: true });
+    assert.ok(!cached.models.some((model) => model.id === "claude-fable-9"));
+    assert.equal(cached.revalidate, true);
+
+    const fresh = await listModelsAsync("claude", { env, refresh: true, offline: false, fetchImpl });
+    assert.ok(fresh.models.some((model) => model.id === "claude-fable-9"));
+    assert.equal(fresh.revalidate, undefined);
+
+    const next = await listModelsAsync("claude", { env, offline: true });
+    assert.equal(next.cached, true);
+    assert.equal(next.revalidate, undefined);
+    assert.ok(next.models.some((model) => model.id === "claude-fable-9"));
   });
 });
 

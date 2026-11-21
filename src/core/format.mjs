@@ -4,6 +4,7 @@
  * Compact output is the Director-facing contract: one line per profile with no
  * header, colour, or decoration. Keep it stable — orchestrators parse it.
  */
+import { MASK, maskEnv } from "./env.mjs";
 
 /** Trim to a single line and cap at `width` characters. */
 export function firstSentence(text, width = 40) {
@@ -51,7 +52,7 @@ function showValue(value) {
 export function diffSummary(profile, globalProfile) {
   const fields = profile.differs ?? profile.overrides ?? [];
   return fields
-    .map((field) => (globalProfile ? `${field} (global: ${showValue(globalProfile[field])})` : field))
+    .map((field) => (globalProfile ? `${field} (global: ${showValue(field === "env" ? maskEnv(globalProfile.env) : globalProfile[field])})` : field))
     .join(", ");
 }
 
@@ -116,6 +117,7 @@ export function renderShow(profile, options = {}) {
   lines.push(`Name: ${profile.name ?? profile.id}`);
   lines.push(`Harness: ${displayHarness(profile, detection)}`);
   if (profile.provider) lines.push(`Provider: ${profile.provider}`);
+  if (profile.api) lines.push(`API key: ${profile.api} (stored key; herdr-loadout keys list)`);
   lines.push(`Model: ${profile.model ?? "?"}`);
   lines.push(`Effort: ${profile.effort ?? "?"}`);
   lines.push(`Cost: ${profile.cost ?? "normal"}`);
@@ -137,7 +139,7 @@ export function renderShow(profile, options = {}) {
     lines.push(`Extra args: ${profile.extra_args.join(" ")}`);
   }
   if (profile.env && Object.keys(profile.env).length > 0) {
-    lines.push(`Env: ${Object.entries(profile.env).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+    lines.push(`Env: ${Object.keys(profile.env).map((key) => `${key}=${MASK}`).join(" ")}`);
   }
   if (profile.notes) {
     lines.push("");

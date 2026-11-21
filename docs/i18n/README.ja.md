@@ -82,7 +82,7 @@ herdr-app do mod.open --name herdr-loadout      # キーバインドなしで開
 ```
 
 - フォーカス中のターミナルのプロジェクトを基準にグローバル/プロジェクトのプロファイルを表示し、キーと操作は TUI と同じです
-  （`Enter` 編集、`a` 追加、`c` コピー、`d` 削除、`r` override 解除、`j` harness 一覧、編集中 `g`/`p` 保存、`t` 実行チェック、`Esc` 戻る/閉じる）。マウスでもクリックできます。
+  （`Enter` 編集、`a` 追加、`c` コピー、`d` 削除、`r` override 解除、`[`/`]` 並べ替え、`j` harness 一覧、`k` API キー、編集中 `g`/`p` 保存、`t` 実行チェック、`Esc` 戻る/閉じる）。マウスでもクリックできます。
 - すべての読み書きは `herdr-loadout editor <action>`（CLI の JSON バックエンド）を経由するため、TUI とルールが同じです。
 - アプリ mod は Node を使えないため、インストールスクリプトが node と CLI のパスを `cli.js` に書き込みます。チェックアウトを移動したら再インストールします。
 - アプリのコマンドパレット（Ctrl+Shift+P）は mod の項目を受け付けないため、キーバインドか `mod.open` で開きます。
@@ -120,6 +120,7 @@ TUI の操作:
 | `c` | 複製 |
 | `d` | 削除（グローバルのプロファイルなら、そのプロジェクトの override も一緒に削除） |
 | `r` | プロジェクトの override を解除し、グローバルに再び従う（override のある行のみ） |
+| `[` `]` | 選択中のプロファイルをグループ内で上/下へ移動（選択も追従） |
 | `j` | 検出画面（インストール済み harness + モデルカタログ） |
 | `q` | 終了（pane も閉じる） |
 
@@ -182,6 +183,10 @@ herdr-loadout validate              # 設定の検証
 herdr-loadout detect                # harness の有無 + モデルカタログ
 herdr-loadout catalog               # models.dev スナップショット（225 provider）の確認/更新
 herdr-loadout launch builder        # Test Launch（dry-run）
+herdr-loadout command builder --name w1 --pane 3   # worker の起動コマンドを現在のプロファイル値で出力
+herdr-loadout task new api-auth --worker builder-auth --profile builder   # .herdr/runs/<日付>-api-auth/ に brief.md と report.md を作る
+herdr-loadout worker-check builder-auth   # 実行中の worker が今のプロファイルと合っているか（違えば exit 1）
+herdr-loadout agents-md             # プロジェクトの AGENTS.md にある委任ブロックの状態（current | missing | outdated | declined）
 herdr-loadout ui                    # TTY がない場合は pane を開いて終了
 ```
 
@@ -216,7 +221,8 @@ node bin/herdr-loadout.mjs list --compact
 ```text
 builder | expensive | implementation/refactor/design
 junior | normal | implementation/light
-reviewer | cheap | review
+qa | normal | qa/testing
+reviewer | cheap | review/security
 scout | cheap | research
 ```
 
@@ -228,7 +234,7 @@ scout | cheap | research
 | `<project>/.herdr/loadout.toml` | プロジェクトオーバーライド（記載したフィールドのみ置換） |
 
 `herdr-loadout path` で実際の場所を確認できます。手で編集しても構いません。
-未知のキーは保存時にも保持されます。
+保存（`set`、`add`、`remove`、`reset`、`import`、エディタ）は変更を求められたキーとブロックだけを書き換えるので、コメント、未知のキー、ほかのテーブル、空行、改行コードはそのまま残ります。そのように編集できないファイル（インライン配列で書いたプロファイルなど）は何も書き込まずに拒否します。
 
 ```toml
 version = 1
@@ -253,25 +259,41 @@ effort = "high"
 extra_args = ["--add-dir", "Assets"]
 ```
 
-### 4. Director 用 AGENTS.md スニペット
+### 4. プロジェクトの AGENTS.md の委任ブロック
 
-```md
-## Delegation
+スキルはエージェントが委任すると決めた後にしか読み込まれません。そのため「ユーザーと話すエージェントは自分で作業せず委任する」
+「harness 内蔵の subagent を使わない」というルールは、harness が起動時に必ず読むファイルに置く必要があります。ブロックの原文は
+`src/core/agents-md.md` だけで、CLI がそのまま出力・インストールします。
 
-Use Herdr workers when delegation is beneficial.
-
-Before delegating:
-1. Query available agent profiles: `herdr-loadout list --compact`
-2. Choose the profile whose usage description best matches the task: `herdr-loadout show <id>`
-3. Prefer the cheaper suitable profile when multiple profiles are appropriate.
-4. Use an independent reviewer for substantial code changes.
-5. Do not delegate trivial work.
-
-Use the Herdr skill for spawning, messaging, waiting, and reading worker results.
-Launch workers with the profile's harness/model/effort via `herdr agent start`.
+```bash
+herdr-loadout agents-md            # 状態: current | missing | outdated | declined（--json も可）
+herdr-loadout agents-md print      # ブロックの原文
+herdr-loadout agents-md install    # AGENTS.md に書く・更新する。必要な @AGENTS.md import も足す
+herdr-loadout agents-md decline    # このプロジェクトでは二度と尋ねないよう記録
 ```
 
-モデルや harness の入れ替えはプロファイルの修正だけで済みます。AGENTS.md は変わりません。
+- `herdr-loadout` スキルがセッションごとに状態を確認し、`missing`・`outdated` ならブロックをユーザーに見せて一度だけ尋ねます。
+  はいなら `install`、いいえなら `decline` です。尋ねずに書くことはなく、`[Worker-...]` プロンプトで始まった worker はこの手順を飛ばします。
+- `install` は `<!-- herdr-loadout:start -->` と `<!-- herdr-loadout:end -->` の行の間だけを書きます。ファイルがなければ作り、
+  マーカーがなければ末尾に足し、あればその間だけを置き換えます。再実行しても何も変わりません。マーカーが壊れていれば、どのファイルにも触れずに失敗します。
+- 断った記録はリポジトリではなく、プラグインの状態フォルダの `agents-md-declined.json` にプロジェクトルートごとに残ります。`install` で消えます。
+- プロジェクトルートは `--project`、なければ上にたどって最も近い `.git`・`.herdr` のあるフォルダです。
+
+harness ごとにプロジェクトルートで読むファイルが違います。ドキュメントで確認し、pi 以外の五つは実際の実行（一時プロジェクトで各 harness に指示ファイルの内容を尋ねる）でも確認しました。pi はソースコードで確認しました。
+
+| harness | 読むファイル | `install` がすること |
+|---|---|---|
+| claude | `CLAUDE.md`、`.claude/CLAUDE.md`、`CLAUDE.local.md` のどれかがあればそれらだけ、なければ `AGENTS.md`（v2.1.277 以降） | そのファイルに `@AGENTS.md` import（`.claude/CLAUDE.md` は `@../AGENTS.md`） |
+| omp | フォルダごとに一つ: `.omp/AGENTS.md` > `.claude/CLAUDE.md` > `.agent(s)/AGENTS.md` > `.gemini/GEMINI.md` > `.github/copilot-instructions.md` > `AGENTS.md` > `CLAUDE.md` | `AGENTS.md` より優先されるファイルがあればそこに import |
+| codex | `AGENTS.override.md`、なければ `AGENTS.md` | `AGENTS.override.md` は `note:` で知らせるだけ（import を展開しない） |
+| opencode | `AGENTS.md`（ないときだけ `CLAUDE.md`） | なし |
+| agy | `AGENTS.md` と `GEMINI.md` の両方 | なし |
+| pi | `AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md` | codex と同じ |
+
+Claude Code が `CLAUDE.md` しか読まない場合（古いバージョン、または Project instructions が `claude-md`）は、`install --claude-md` が
+`CLAUDE.md` を作って import します。`~/.claude/settings.json` に `claude-md` が設定されていれば、オプションなしでもそうします。
+
+モデルや harness の入れ替えはプロファイルの修正だけで済みます。AGENTS.md のブロックは変わりません。
 
 ### 5. エージェントにプロファイルを作らせる（非対話）
 
@@ -301,6 +323,12 @@ herdr-loadout reset builder
 # 削除（グローバルならこのプロジェクトの override も一緒に）
 herdr-loadout remove builder-unity
 
+# 一覧の順序を変える（同じグループ内のみ：グローバル同士、プロジェクト専用同士）
+herdr-loadout move scout --up
+herdr-loadout move scout --down
+herdr-loadout move scout --before builder
+herdr-loadout move scout --after builder
+
 # 設定ファイルをまとめてマージ
 herdr-loadout import ./team-profiles.toml
 ```
@@ -315,8 +343,14 @@ herdr-loadout import ./team-profiles.toml
 | `add` | 既存の id は拒否 | グローバルに同じ id があっても拒否します（`set --project` で override） |
 | `import` | そのままマージ | グローバルにある id は差分のみ override として保存し、同一ならスキップします |
 
+`move` はグローバル/`--project` の区別に従いません。グローバルのプロファイル（override の有無を問わず）はグローバルファイル内で、プロジェクト専用はプロジェクトファイル内で並べ替え、override の位置は順序に影響しません。`--project` はプロジェクトを指定するだけで、書き込むファイルはプロファイルで決まります。
+
+`move` は `[[profiles]]` のブロックだけをテキストとして移すので、コメント、ほかのテーブル、改行コードはそのまま残ります。ブロック単位で並べ替えられないファイル（インライン配列で書いたプロファイルなど）は何も書き込まずに拒否します。
+`move --json` は `{ok, id, scope, index, moved, path, order, message}` を出力します。`index` は移動後の一覧での位置（0 始まり）、`order` はそのグループの新しい順序です。すでにその位置で何も変わらないときは `moved: false`、`path: null` で、`order` はありません。
+終了コード: 何も変わらなくても `0`、存在しない id・別グループや自分自身を基準にした移動・ブロック単位で並べ替えられないファイルは `1`（ファイルはそのまま）、位置フラグがない、または複数あるときは `2`。
+
 `list` は TUI と同じく **Global profiles** と **Project profiles** に分けて表示し、override されたプロファイルには `Overridden: effort (global: medium)` のように差分とグローバルの値を示します。`list --json` の `differs` も同じ情報です。`list --compact` は変わりません。
-`--json` は機械可読な結果（`{ok, id, scope, path, created}`）を出力します。
+`--json` は機械可読な結果（`{ok, id, scope, path, created}`、`move` は上記の形）を出力します。
 終了コード: `0` 成功、`1` ランタイムエラー、`2` 使用法/検証エラー。
 
 同じ id が既にある場合 `add` は失敗します（`--force` で上書き、`set` で更新）。
@@ -334,12 +368,23 @@ herdr plugin action invoke herdr-loadout.add-profile
 
 | スキル | 用途 |
 |---|---|
-| `herdr-loadout` | プロファイルを使って worker に作業を委任（作業方針の読み込み → 照会 → `launch --json` → `herdr agent start` または `hc run`） |
+| `herdr-loadout` | プロファイルを使って worker に作業を委任（プロジェクト設定 → 作業方針の読み込み → 照会 → `command` が出力した `herdr agent start` または `hc run` を実行） |
 | `herdr-loadout-edit` | プロファイルと作業方針の追加・変更・削除・インポート |
 
-`launch <id> --json` は `ok`、`harness`、`args`、`env`、`argv` を返します。TUI では `args` を
-`herdr agent start <name> --kind <harness> --pane <pane_id> -- <args...>` の後ろにそのまま付け、
-`env` の各項目は pane 作成時に `herdr pane split --env 'KEY=VALUE'` で渡します。
+`command <id>` は worker を起動するホストコマンドを、実行時点のプロファイル値で出力します。エージェントが以前に
+使ったモデルや effort を記憶から書き直さないようにするためです。`--host herdr|hc`、`--name`、`--pane`（TUI）、
+`--space`・`--tab`（アプリ）、`--cwd`（既定: 現在のフォルダ）を受け取り、指定しなかった値は `<pane_id>` のようなプレースホルダーで出力されます。
+アプリでは `--tab self` が自分を表示しているタブを `herdr-app ls` から探して使い、`--space` を指定しなければそのタブの space も使います。
+ほかの worker を率いる worker が、メンバーを自分のタブに置くときに使います。アプリが新しいタブに置いた worker には `herdr.tab` ラベルがないためです。
+`--shell powershell` なら PowerShell の引用規則で、既定では sh（bash、Git Bash、zsh）の規則で囲みます。
+`#` で始まる行は案内です。TUI でプロファイルに `env` がある場合、pane を開くときに渡す `--env` フラグを案内として出力します。
+
+`launch <id> --json` は同じ値を `ok`、`harness`、`args`、`env`、`argv` として返します。
+
+`env` の値は API キーである場合があるため、`list`、`show`、`launch`、`command` の出力と編集画面（TUI・アプリ）ではすべて
+`***` で伏せます。編集画面の Env 欄で `KEY=***` をそのままにすると既存の値が保たれ、新しい値を入力すると置き換わります。
+`command` が出力する TUI の `--env` フラグは `"KEY=$(… env-value <id> KEY)"` の形なので、シェルが実行するときに値を
+読み込みます。実際の値は `herdr-loadout env-value <id> <KEY>` でしか出力されません。アプリ（`hc`）では `exec` が値を直接設定します。
 
 ### 作業方針（workflow）
 
@@ -361,6 +406,39 @@ herdr-loadout workflow init                 # 組み込みのデフォルトを�
 グローバルファイルを作ると以後はユーザーのファイルになるため、組み込みのデフォルトが変わっても反映されません。
 `herdr-loadout path` の `globalWorkflow`、`projectWorkflow` が 2 つのファイルの場所です。
 
+### タスクフォルダと報告
+
+委任するタスクごとに `.herdr/runs/<YYYY-MM-DD>-<slug>/` フォルダを 1 つ使います。`task new` がその中に `brief.md` と
+`report.md` を作り、オーケストレーターのアドレス（アプリは `$HC_TERMINAL_ID`、TUI は `$HERDR_PANE_ID`、`--to` で変更）と
+worker が報告に使うコマンドを埋めます。`runs/` を新しく作るときは `runs/.gitignore`（`*`）も書くので、`.herdr/` を
+コミットするプロジェクトでもタスクファイルはコミットされません。同じフォルダがすでにあれば拒否します。
+
+```bash
+herdr-loadout task new api-auth --worker builder-auth --profile builder   # 最後の行が worker に送るプロンプト
+herdr-loadout command builder --host hc --name builder-auth --task .herdr/runs/2026-11-21-api-auth --space <space_id>
+herdr-loadout worker-check builder-auth                                      # 残した worker に再びプロンプトする前に
+```
+
+- タスク id は slug を大文字にしたものです（`api-auth` → `API-AUTH`）。報告ファイルの最後の行は `API-AUTH-COMPLETE`、
+  `API-AUTH-PARTIAL`、`API-AUTH-BLOCKED`、`REVIEW-READY <n>` のいずれかです。
+- 完了の合図は worker が送ります。報告ファイルを書いたあと、`[Report-<worker>] <MARKER> <report>` の 1 行を
+  オーケストレーターに送ります（アプリは `hc send`、TUI は `herdr agent prompt`）。判断の基準は報告ファイルで、この行は合図にすぎません。
+- オーケストレーターは完了をポーリングしません。アプリでは報告せずに止まった worker に気づくため、バックグラウンドで
+  `hc wait --children any` を 1 つ動かし、TUI では worker ごとに `herdr agent wait <worker> --until blocked` を 1 つ動かします。
+  アプリの watch はまず `reason` を見ます。`message` の戻りは `children` が空でも worker がいないという意味ではなく、
+  `children` の戻りで worker が 1 つもないときだけ watch を止めます。
+- まとまった実装の次の段階は独立した QA です。実装者とハーネスかモデルが異なる `qa` プロファイルが、コードを読む前に brief から
+  シナリオを書き、実際の CLI とホスト（TUI は隔離した `herdr --session <name> server`、アプリは終わったら閉じる一時的な hc worker）で
+  実行します。見つけたバグはすべて回帰テストにし、ラウンドごとに新しい QA worker が `qa-<n>.md` を書きます。ソースの修正は実装者に
+  戻します。コードレビュー（`review-<n>.md`）は、セキュリティに関わる変更（シェルのクォート、秘密値、権限）かユーザーの依頼があるときだけです。
+- テンプレート: `<project>/.herdr/templates/brief.md`・`report.md` があればそれを、なければ組み込みのもの（`src/core/templates/`）を
+  使います。`{{task}}`、`{{worker}}`、`{{notify}}` などの `{{key}}` が埋められ、知らないキーはそのまま残ります。
+- `command --task <フォルダ>` は worker のプロファイルと起動の指紋（harness、引数、env の名前。値は含めない）をそのフォルダの
+  `workers.json` に記録します。アプリ（`--host hc`）では同じ値を `hc run` のラベルとしても付けます。`worker-check` はこの記録を
+  今のプロファイルと実行中の worker と比べ、プロファイルが変わった、別のプロファイルで動いている、シェルに戻った、TUI の再起動で
+  起動引数を失った、のいずれかなら理由を出力して exit 1 で終わります。ホストに問い合わせられない（CLI がない、サーバーが
+  停止している）ときは `host-unavailable` で exit 1 になります。worker の状態は不明なので、起動し直さずに再確認します。
+
 ### Herdr アプリで使う
 
 スキルは `HERDR_ENV=1` なら TUI（`herdr`）、`HC_TERMINAL_ID` があればアプリ（`hc`、`herdr-app`）と判断し、
@@ -369,6 +447,8 @@ herdr-loadout workflow init                 # 組み込みのデフォルトを�
 - `argv` が worker コマンド全体です: `hc run --bg --name <name> --cwd <dir> --label herdr.space=<space> -- <argv...>`。
 - `hc run` は環境変数を渡せないため、`env` があるプロファイルの `argv` は
   `herdr-loadout exec <id>` を経由します。`exec` が env を適用して harness を起動し、終了コードをそのまま返します。
+  引数に二重引用符が含まれる場合（agy の `--settings` JSON など）も同じ経路を使います。Windows PowerShell 5.1 が
+  ネイティブコマンドに渡す引数から二重引用符を取り除いてしまうためです。
 - Codex は `hc` 配下で `--no-daemon` が必要なため、`--host hc` のときは自動で付きます。
 - アプリにはプラグインアクションがありません。launcher がなければ、ソースチェックアウトで `node scripts/setup-shim.mjs` を実行して作成します。
 
@@ -377,7 +457,47 @@ herdr-loadout workflow init                 # 組み込みのデフォルトを�
 ## プロファイルのフィールド
 
 必須: `id`, `name`, `harness`, `model`, `effort`, `when_to_use`
-任意: `avoid_when`, `cost`(cheap|normal|expensive), `provider`, `mode`, `extra_args`, `env`, `tags`, `skills`, `notes`
+任意: `avoid_when`, `cost`(cheap|normal|expensive), `provider`, `mode`, `extra_args`, `env`, `tags`, `skills`, `notes`, `sandbox`, `approval_policy`, `permission_mode`, `api`, `auth`
+
+`api` はハーネスを自前のログインではなく保存済みの API キーで起動させます。値は保存済みキーの id で、空なら
+ハーネス自身のログイン（サブスクリプション）を使います。対応する組み合わせ:
+
+| ハーネス | プロバイダー | 接続方法 |
+|---|---|---|
+| claude | DeepSeek | DeepSeek の Anthropic 互換エンドポイント（`https://api.deepseek.com/anthropic`） |
+| agy | Google AI Studio | Gemini API |
+
+Codex は Responses API しか受け付けません（0.170 では `wire_api = "chat"` を拒否）。DeepSeek と Google は Responses API を
+提供していないため、Codex には使えません。
+
+キーはプロフィールとは別に、グローバル設定フォルダーの `keys.toml` に保存されます。プロジェクトファイルには入らない
+ためリポジトリにコミットされることはなく、すべての出力で末尾 4 文字だけが表示されます（`sk-…1a2b`）。
+
+```bash
+herdr-loadout keys add deepseek --provider deepseek   # キーは stdin から読む（端末では非表示入力）
+herdr-loadout keys list                               # 保存済みキー（マスク）とプロバイダー
+herdr-loadout keys test deepseek                      # キーが使えるかプロバイダーに問い合わせる
+herdr-loadout set <id> --api deepseek                 # プロフィールがそのキーで起動する
+```
+
+アプリのエディターでは `k`（API キー画面）でキーを追加・テスト・削除し、claude / agy プロフィールの API 欄で選びます。
+キーを選ぶとモデル一覧がそのプロバイダーの一覧（DeepSeek `/models`、Gemini API）に切り替わります。
+
+起動時に設定するもの:
+
+- claude + DeepSeek: `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN=<キー>`、`ANTHROPIC_MODEL`・`ANTHROPIC_DEFAULT_OPUS_MODEL`・
+  `ANTHROPIC_DEFAULT_SONNET_MODEL`=`<モデル>[1m]`、`ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash`、
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`、そして継承された `ANTHROPIC_API_KEY` を空にします。`--model` も `<モデル>[1m]`
+  （1M コンテキストの印。リクエスト前に Claude Code が外します）で渡します。DeepSeek の Claude Code ガイドに従った値です。
+- agy + Google: `GEMINI_API_KEY=<キー>` と `--settings <状態フォルダー>/agy-api/…/settings.json`（`{"modelProvider":"gemini"}`）。
+- プロフィールの `env` が同じ名前を設定していればそちらが優先されます。キーがない、またはハーネスに合わない場合は
+  `launch` の `API key` チェックが失敗します。
+
+agy の `auth = "api-key"` も引き続き動作します。この場合キーはプロフィールの `env.GEMINI_API_KEY` か worker の環境の
+`GEMINI_API_KEY` から読みます。agy に組み込まれた API モデル一覧は agy のビルド時点で固定され、新しいモデルが含まれません。
+そのため一覧を読むたびにキー（環境の `GEMINI_API_KEY`、プロフィールのキー、保存済み Google キーの順）で Gemini API の
+モデル一覧を照会し、agy にない Gemini モデルを同じ settings ファイルの `customModelsConfig` に custom model として登録します。
+新しいモデルはエディタのモデル一覧と `--model` ですぐに使えます。照会に失敗した場合は前回見つけた一覧をそのまま使います。
 
 `harness` は `claude`, `codex`, `opencode`, `omp`, `pi`, `agy`（Antigravity CLI）, `custom` のいずれかです。
 `custom` 以外で一覧にない値は検証で拒否されます。
@@ -388,9 +508,9 @@ herdr-loadout workflow init                 # 組み込みのデフォルトを�
 |---|---|---|---|
 | `claude` | `--model` | `--effort` | 一覧コマンドがないため **omp の Anthropic カタログから導出**。omp がなければエイリアス（opus/sonnet/haiku/fable）にフォールバック |
 | `codex` | `-m` | `-c model_reasoning_effort=<lvl>` | `codex debug models` でカタログ取得 |
-| `opencode` | `-m` | `--variant` | `opencode models` で取得 |
+| `opencode` | v1: `-m` · v2: config の `model` | v2: config `model` の `#variant`（v1 では渡らない） | `opencode models` で取得。インストール済みのバージョン（`opencode --version`）で引数を選ぶ。v2 の TUI には `-m` がないため、モデル・effort・権限を `OPENCODE_CONFIG_CONTENT` で渡し、その env を読ませるため `--standalone` を付ける（共有バックグラウンドサーバーはワーカーの env を無視する） |
 | `omp` | `--model=` | `--thinking=` | `omp models --json` で取得（thinking レベル含む） |
-| `agy` | `--model` | `--effort` | Antigravity CLI。`agy models` で取得。Herdr の `--kind agy` と同じ id。`gemini-3.8-flash-medium` のように id が `-low`・`-medium`・`-high` などで終わる場合、effort はその値になり `--effort` は付かない（TUI では Effort 項目を隠す） |
+| `agy` | `--model` | `--effort` | Antigravity CLI。`agy models` で取得。Herdr の `--kind agy` と同じ id。`gemini-3.8-flash-medium` のように id が `-low`・`-medium`・`-high` などで終わる場合、effort はその値になり `--effort` は付かない。エディターはこうした id を 1 つのモデル（`gemini-3.8-flash`）にまとめて表示し、レベルは Effort で選ぶ（保存される値は `gemini-3.8-flash-medium` のような完全な id） |
 | `custom` | `--model` | `--effort` | 自由入力 |
 
 ## 検証方法

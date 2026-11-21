@@ -20,12 +20,15 @@ import {
   stateDir,
 } from "../src/core/paths.mjs";
 import { detectHarnesses, dryRun, effortLevels, HOSTS, listModels, resolveSpawn, withModelEffort } from "../src/core/detect.mjs";
+import { renderStartCommand, SHELLS } from "../src/core/command.mjs";
+import { maskEnv } from "../src/core/env.mjs";
 import {
   ensureGlobalConfig,
   loadConfig,
   readConfigFile,
   upsertProfile,
   deleteProfile,
+  deleteProfileFrom,
 } from "../src/core/store.mjs";
 import { fetchCatalog, modelsForProvider, readSnapshot, MODELS_DEV_URL } from "../src/core/modelsdev.mjs";
 import { mergeProfileInput, normalizePayload, profileFromFlags, readProfilePayload, looksLikeToml } from "../src/core/input.mjs";
@@ -33,6 +36,10 @@ import { parse as parseToml } from "smol-toml";
 import fs from "node:fs";
 import { validatePermissions } from "../src/core/permissions.mjs";
 import { initWorkflow, loadWorkflow, renderWorkflow } from "../src/core/workflow.mjs";
+import { createTask, detectHost, resolveTaskRoot } from "../src/core/task.mjs";
+import { agentsMdStatus, blockText, installAgentsMd, recordDecline, resolveProjectRoot } from "../src/core/agents-md.mjs";
+import { appPlace, compareWorker, findWorkerRecord, INSPECTION_CODES, inspectWorker, launchFingerprint, launchLabels, launchRecord, recordWorker } from "../src/core/worker.mjs";
+import { listKeys, PROVIDER_IDS, PROVIDERS, removeKey, saveKey, testKey } from "../src/core/keys.mjs";
 
 const EXIT_OK = 0;
 const EXIT_ERROR = 1;
@@ -48,16 +55,37 @@ Usage:
   herdr-loadout detect [--json] [--refresh]
   herdr-loadout catalog [--refresh] [--provider ID] [--json]   # models.dev snapshot
   herdr-loadout launch <id> [--json] [--host herdr|hc] [--project PATH]
+  herdr-loadout command <id> [--host herdr|hc] [--shell sh|powershell] [--name WORKER]
+                        [--pane ID] [--space ID] [--tab ID] [--cwd DIR] [--task DIR] [--project PATH]
+                                   print the command that starts a worker on this profile
+  herdr-loadout worker-check <worker> [--profile ID] [--task DIR] [--host herdr|hc] [--json]
+                                   does a running worker still match its profile? (exit 1: no)
   herdr-loadout exec <id> [--host herdr|hc] [--project PATH]   run the harness here
+  herdr-loadout env-value <id> <KEY> [--project PATH]   one env value a launch sets (unmasked)
   herdr-loadout ui [--placement split|popup|overlay] [--project PATH]
   herdr-loadout editor <action> [--input JSON] [--project PATH]   Herdr app editor backend (JSON)
+  herdr-loadout keys [list] [--json]                 stored API keys (masked) and providers
+  herdr-loadout keys add <ID> --provider P [--label L]   store a key; it is read from stdin
+  herdr-loadout keys remove <ID> | keys test <ID>
   herdr-loadout workflow [--json] [--project PATH]   the delegation workflow for this project
   herdr-loadout workflow init [--project PATH]       create the global (or project) file to edit
+  herdr-loadout task new <slug> [--worker NAME] [--profile ID] [--to ADDRESS]
+                         [--host herdr|hc] [--project PATH] [--json]
+                                   create .herdr/runs/<date>-<slug>/ with brief.md and report.md
+  herdr-loadout agents-md [status] [--project PATH] [--claude-md] [--json]
+                                   is the delegation block in this project's AGENTS.md?
+                                   (current | missing | outdated | declined)
+  herdr-loadout agents-md print    the block, exactly as install writes it
+  herdr-loadout agents-md install [--project PATH] [--claude-md] [--json]
+                                   write or update the block (and the @AGENTS.md imports
+                                   other harnesses need), touching nothing outside its markers
+  herdr-loadout agents-md decline [--project PATH] [--json]
+                                   remember that the user said no here (kept outside the repo)
 
 Write:
   herdr-loadout add [--id ID] [--name NAME] [--harness H] [--model M]
                     [--effort E] [--cost C] [--when TEXT] [--avoid TEXT]
-                    [--sandbox S] [--approval-policy A] [--permission-mode P]
+                    [--sandbox S] [--approval-policy A] [--permission-mode P] [--auth A] [--api KEY]
                     [--tag T]... [--env K=V]... [--from FILE|-]
                     [--project PATH] [--force] [--json]
                     [-- EXTRA_ARG...]        everything after -- becomes extra_args
@@ -65,6 +93,8 @@ Write:
   herdr-loadout reset <id> [--project PATH] [--json]           drop a project override
   herdr-loadout remove <id> [--project PATH] [--json]
   herdr-loadout import <FILE|-> [--project PATH] [--json]      merge a config file
+  herdr-loadout move <id> --up|--down|--before ID|--after ID [--project PATH] [--json]
+                                   change where a profile is listed
 
 Profiles live in two places: the global config (shared) and the project file
 (<project>/.herdr/loadout.toml). A project file can hold an override of a global
@@ -80,6 +110,9 @@ Writing targets the global config by default; --project writes the project file.
            --project: deletes the project entry (an override or a project-only profile).
   add      refuses an id that already exists; with --project, also one that exists
            in global (use \`set --project\` to override it).
+  move     reorders within the profile's own group: a global profile (overridden
+           or not) moves in the global file, a project-only one in the project
+           file. --project only names the project, as for list.
 Flags whose values begin with a dash must use --flag=value, or pass them after --.
 
 Options:
@@ -97,11 +130,40 @@ Options:
     Claude: manual | acceptEdits | auto | dontAsk | plan | bypassPermissions
     OMP: always-ask | always-ask-cached | write | yolo; OpenCode: ask | allow | deny | auto
     agy: accept-edits | auto | plan | dangerously-skip-permissions
+  --api       a stored key the harness runs on instead of its own sign-in
+              (claude: DeepSeek; agy: Google AI Studio). Empty = sign-in.
+  --auth      agy: subscription (its sign-in; default) | api-key (Gemini API with
+              GEMINI_API_KEY from --env or the worker's environment)
   --host      where the worker runs: herdr (TUI, default) or hc (Herdr app).
               launch --json adds \`argv\`, the whole command for \`hc run --\`; it goes
               through \`exec\` when the profile sets environment variables, which
-              \`hc run\` cannot pass.
+              \`hc run\` cannot pass, or when an argument holds a double quote, which
+              Windows PowerShell 5.1 strips.
+  --shell     command: quote for sh (default; bash, Git Bash, zsh) or powershell.
+              Values not given (--name, --pane, --space) print as <placeholders>.
+  --cwd       command: the worker's working directory (default: here)
+  --tab       command --host hc: the app tab for the worker. \`--tab self\` is the tab
+              that shows you ($HC_TERMINAL_ID, found in \`herdr-app ls\`), and its
+              space when --space is not given: a lead's members go there.
+  --claude-md agents-md: also import AGENTS.md from CLAUDE.md (created when absent), for a
+              Claude Code that reads only CLAUDE.md (older versions, or Project
+              instructions set to claude-md)
+  --worker    task new: the worker's name, used in the prompt and the report line
+  --profile   task new: the profile id recorded in the brief.
+              worker-check: the profile the worker should run (else its record's)
+  --to        task new: the orchestrator address the worker reports to
+              (default: $HC_TERMINAL_ID in the app, $HERDR_PANE_ID in the TUI)
+  --task      command: record the worker (profile and launch fingerprint) in this
+              task folder's workers.json. worker-check: read the record from there
+              (default: the newest record for that worker under .herdr/runs/).
+              With --host hc, command also labels the worker with its profile and
+              fingerprint, which worker-check reads first.
+  --up, --down        move: one place up or down the list
+  --before, --after   move: put the profile right before or after this one
   -h, --help  show this message
+
+Env values may hold secrets: list, show, launch, and command print them as ***.
+command reads them at run time through env-value instead of printing them.
 `;
 
 function fail(message, code = EXIT_ERROR) {
@@ -142,7 +204,7 @@ function cmdList(options) {
     return printJson({
       globalPath: loaded.globalPath,
       projectPath: loaded.projectPath,
-      profiles: profiles.map(({ origin, overrides, ...profile }) => ({ ...profile, origin, overrides })),
+      profiles: profiles.map(({ origin, overrides, ...profile }) => ({ ...profile, env: maskEnv(profile.env), origin, overrides })),
       invalid: loaded.invalid,
     });
   }
@@ -167,7 +229,7 @@ function cmdShow(id, options) {
     const known = [...byId.keys()];
     fail(`profile "${id}" not found.${known.length ? ` Known ids: ${known.join(", ")}` : ""}`);
   }
-  if (options.json) return printJson(profile);
+  if (options.json) return printJson({ ...profile, env: maskEnv(profile.env) });
   const detection = resolveDetection([profile], { detect: options.detect ?? true });
   const globalProfile = loaded.profiles.find((entry) => entry?.id === id) ?? null;
   process.stdout.write(`${renderShow(profile, { detection, globalProfile })}\n`);
@@ -204,6 +266,89 @@ function cmdWorkflow(sub, options) {
   const workflow = loadWorkflow({ projectRoot });
   if (options.json) return printJson(workflow);
   process.stdout.write(renderWorkflow(workflow));
+}
+
+/**
+ * Scaffold a task folder: brief and report from the project's templates or the
+ * built-in ones, with the orchestrator address and notify command filled in.
+ */
+function cmdTask(sub, slug, options) {
+  if (sub !== "new") fail("usage: herdr-loadout task new <slug> [--worker NAME] [--profile ID] [--to ADDRESS]", EXIT_USAGE);
+  const result = createTask({
+    slug,
+    projectStart: options.project ?? process.cwd(),
+    host: options.host,
+    to: options.to,
+    worker: options.worker,
+    profile: options.profile,
+  });
+  if (!result.ok) {
+    if (options.json) printJson({ ok: false, errors: [result.error] });
+    else process.stderr.write(`${result.error}\n`);
+    process.exit(result.usage ? EXIT_USAGE : EXIT_ERROR);
+  }
+  if (options.json) return printJson(result);
+  for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
+  const created = [result.gitignore, result.brief, result.report].filter(Boolean);
+  const lines = created.map((file) => `created ${file}`);
+  lines.push("# fill in brief.md, start the worker, then send it:", result.prompt);
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+/**
+ * The delegation block in the project's AGENTS.md: its state, the block itself,
+ * installing it, or recording that the user declined it.
+ */
+function cmdAgentsMd(sub, options) {
+  const action = sub ?? "status";
+  if (action === "print") {
+    process.stdout.write(`${blockText()}\n`);
+    return;
+  }
+  const projectRoot = resolveProjectRoot({ project: options.project });
+  const claudeMd = options["claude-md"] === true;
+  if (action === "status") {
+    const status = agentsMdStatus({ projectRoot, claudeMd });
+    if (options.json) return printJson(status);
+    process.stdout.write(`${renderAgentsMdStatus(status)}\n`);
+    return;
+  }
+  if (action === "install") {
+    const result = installAgentsMd({ projectRoot, claudeMd });
+    if (!result.ok) {
+      if (options.json) printJson({ ok: false, errors: [result.error] });
+      else process.stderr.write(`${result.error}\n`);
+      process.exit(EXIT_ERROR);
+    }
+    if (options.json) return printJson(result);
+    const lines = result.changes.map(({ file, action: done }) => `${done} ${file}`);
+    if (result.undeclined) lines.push("the earlier decline for this project is dropped");
+    lines.push(`state: ${result.status.state}`);
+    process.stdout.write(`${lines.join("\n")}\n`);
+    return;
+  }
+  if (action === "decline") {
+    const record = recordDecline(projectRoot);
+    if (options.json) return printJson({ ok: true, ...record });
+    process.stdout.write(`declined for ${record.path}; recorded in ${record.file}\n`);
+    return;
+  }
+  fail(`unknown agents-md command: ${action} (status, print, install, decline)`, EXIT_USAGE);
+}
+
+function renderAgentsMdStatus(status) {
+  const lines = [`state: ${status.state}`, `project: ${status.projectRoot}`];
+  const block = status.exists ? status.block : "missing (no file)";
+  lines.push(`AGENTS.md: ${block}${status.problem ? ` (${status.problem})` : ""}`);
+  for (const entry of status.imports) {
+    const where = entry.exists ? "" : " (file would be created)";
+    const readers = entry.readers.join(", ");
+    const problem = entry.problem ? ` (${entry.problem})` : "";
+    lines.push(`${entry.relative}: ${entry.present ? "imports" : "needs"} ${entry.line} for ${readers}${entry.present ? "" : where}${problem}`);
+  }
+  if (status.declined) lines.push(`declined: ${status.declined}`);
+  for (const note of status.notes) lines.push(`note: ${note}`);
+  return lines.join("\n");
 }
 
 function cmdValidate(options) {
@@ -311,7 +456,8 @@ async function cmdCatalog(options) {
 /** The whole worker command for `hc run --`, which has no way to set environment variables. */
 function launchArgv(result, id, projectRoot) {
   if (!result.executable) return null;
-  if (Object.keys(result.env).length === 0) return [result.executable, ...result.args];
+  const direct = Object.keys(result.env).length === 0 && !result.args.some((arg) => arg.includes('"'));
+  if (direct) return [result.executable, ...result.args];
   const bin = path.join(sourceRoot(), "bin", "herdr-loadout.mjs");
   return [process.execPath, bin, "exec", id, "--host", result.host, "--project", projectRoot];
 }
@@ -321,11 +467,107 @@ function cmdLaunch(id, options) {
   const profile = byId.get(id);
   if (!profile) fail(`profile "${id}" not found`);
   const result = dryRun(profile, { refresh: options.refresh, host: options.host });
-  if (options.json) return printJson({ ...result, argv: launchArgv(result, id, projectRoot) });
+  if (options.json) return printJson({ ...result, env: maskEnv(result.env), argv: launchArgv(result, id, projectRoot) });
   const lines = result.checks.map((check) => `${check.ok ? "✓" : "✗"} ${check.label}: ${check.detail}`);
   process.stdout.write(`${lines.join("\n")}\n`);
   process.stdout.write(result.ok ? "✓ profile launchable (dry-run)\n" : "✗ profile is not launchable\n");
   if (!result.ok) process.exit(EXIT_ERROR);
+}
+
+function cmdCommand(id, options) {
+  const shell = options.shell ?? "sh";
+  if (!SHELLS.includes(shell)) fail(`--shell must be one of: ${SHELLS.join(", ")}`, EXIT_USAGE);
+  const { byId, projectRoot } = loadMerged(options);
+  const profile = byId.get(id);
+  if (!profile) fail(`profile "${id}" not found`);
+  const host = options.host ?? "herdr";
+  let { space, tab } = options;
+  if (tab === "self") {
+    if (host !== "hc") fail("--tab self needs --host hc", EXIT_USAGE);
+    if (!process.env.HC_TERMINAL_ID) fail("--tab self needs HC_TERMINAL_ID: run it inside a Herdr app terminal", EXIT_USAGE);
+    const place = appPlace(process.env.HC_TERMINAL_ID);
+    if (place.error) fail(place.error);
+    tab = place.tab;
+    space ??= place.space;
+  }
+  if (options.task !== undefined && !options.name) fail("command --task needs --name: the record is kept per worker", EXIT_USAGE);
+  const taskDir = options.task === undefined ? null : path.resolve(options.task);
+  if (taskDir && !fs.existsSync(taskDir)) fail(`task folder ${taskDir} does not exist; create it with \`task new\``, EXIT_USAGE);
+  const result = dryRun(profile, { host });
+  if (!result.ok) {
+    const failed = result.checks.filter((check) => !check.ok).map((check) => `✗ ${check.label}: ${check.detail}`);
+    fail(`profile "${id}" is not launchable\n${failed.join("\n")}`);
+  }
+  const fingerprint = launchFingerprint(result);
+  const lines = renderStartCommand({
+    id,
+    result,
+    argv: launchArgv(result, id, projectRoot),
+    envValueCommand: [process.execPath, path.join(sourceRoot(), "bin", "herdr-loadout.mjs"), "env-value", id, "--project", projectRoot],
+    host,
+    shell,
+    cwd: path.resolve(options.cwd ?? process.cwd()),
+    name: options.name,
+    pane: options.pane,
+    space,
+    tab,
+    launchLabels: launchLabels(id, fingerprint),
+  });
+  if (taskDir) {
+    const file = recordWorker(taskDir, options.name, { profile: id, fingerprint, host, recorded: new Date().toISOString() });
+    lines.push(`# recorded ${options.name} as profile ${id} in ${file}; \`worker-check ${options.name}\` compares against it`);
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+/**
+ * Does a running worker still match its profile? Exit 0 when it does, 1 with
+ * the reasons when it does not (close it and launch a fresh one) or when the
+ * host could not be inspected (nothing is known; check again).
+ */
+function cmdWorkerCheck(name, options) {
+  const host = options.host ?? detectHost();
+  if (!host) fail("not inside Herdr (neither HERDR_ENV=1 nor HC_TERMINAL_ID is set); pass --host herdr|hc", EXIT_USAGE);
+  const live = inspectWorker(host, name);
+  const fileRecord = findWorkerRecord({
+    name,
+    taskDir: options.task === undefined ? undefined : path.resolve(options.task),
+    projectRoot: resolveTaskRoot(options.project ?? process.cwd()),
+  });
+  const record = live.found ? launchRecord(live, fileRecord) : null;
+  let current = null;
+  if (record) {
+    const { byId } = loadMerged(options);
+    const profile = byId.get(record.profile);
+    if (profile) {
+      const result = dryRun(profile, { host });
+      current = { fingerprint: launchFingerprint(result), args: result.args };
+    }
+  }
+  const problems = compareWorker({ host, name, live, record, expectedProfile: options.profile, current });
+  const ok = problems.length === 0;
+  if (options.json) {
+    printJson({ ok, worker: name, host, profile: record?.profile ?? null, record: record?.source ?? null, problems });
+  } else if (ok) {
+    process.stdout.write(`✓ ${name} matches profile "${record.profile}" as it is now\n`);
+  } else {
+    const lines = problems.map((problem) => `✗ ${problem.message}`);
+    lines.push(problems.every((problem) => INSPECTION_CODES.has(problem.code))
+      ? "# could not inspect the host; nothing is known about the worker. Fix what the message names and run worker-check again; do not treat the worker as gone"
+      : "# close this worker and launch a fresh one from `command`; never switch its model or effort in place");
+    process.stdout.write(`${lines.join("\n")}\n`);
+  }
+  if (!ok) process.exit(EXIT_ERROR);
+}
+
+/** Print one value of the env a launch sets, for `$(...)` in a printed command. */
+function cmdEnvValue(id, key, options) {
+  const { byId } = loadMerged(options);
+  const profile = byId.get(id);
+  if (!profile) fail(`profile "${id}" not found`);
+  const { env } = dryRun(profile, { host: "herdr" });
+  if (!Object.hasOwn(env, key)) fail(`profile "${id}" sets no env ${key}`);
+  process.stdout.write(env[key]);
 }
 
 /** Start the profile's harness in this terminal with its args and environment. */
@@ -346,7 +588,13 @@ function cmdExec(id, options) {
   for (const signal of ["SIGINT", "SIGBREAK"]) process.on(signal, () => {});
   for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
   child.on("error", (error) => fail(`could not start ${result.executable}: ${error.message}`));
-  child.on("exit", (code) => process.exit(code ?? EXIT_ERROR));
+  child.on("exit", (code, signal) => {
+    // Left on the worker's screen, where `hc read` finds it next to the harness's own error.
+    if (code !== 0) {
+      process.stderr.write(`herdr-loadout: profile "${id}" (${result.harness}) exited with ${code ?? signal}: ${[result.executable, ...result.args].join(" ")}\n`);
+    }
+    process.exit(code ?? EXIT_ERROR);
+  });
 }
 
 function cmdUi(options) {
@@ -370,6 +618,103 @@ async function cmdEditor(action, options) {
   }
   const { runEditorAction } = await import("../src/core/editor.mjs");
   printJson(await runEditorAction(action, input, { projectRoot: options.project ?? process.cwd() }));
+}
+
+/** Read a key from stdin: piped as is, or typed at a TTY without echo. */
+function readSecret(prompt) {
+  if (!process.stdin.isTTY) {
+    return new Promise((resolve, reject) => {
+      let text = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => (text += chunk));
+      process.stdin.on("end", () => resolve(text.trim()));
+      process.stdin.on("error", reject);
+    });
+  }
+  return new Promise((resolve) => {
+    process.stderr.write(prompt);
+    let text = "";
+    process.stdin.setRawMode(true);
+    process.stdin.setEncoding("utf8");
+    const onData = (chunk) => {
+      for (const char of chunk) {
+        if (char === "\r" || char === "\n" || char === "\u0004") {
+          process.stdin.setRawMode(false);
+          process.stdin.off("data", onData);
+          process.stdin.pause();
+          process.stderr.write("\n");
+          resolve(text.trim());
+          return;
+        }
+        if (char === "\u0003") {
+          process.stdin.setRawMode(false);
+          process.stderr.write("\n");
+          process.exit(EXIT_ERROR);
+        }
+        if (char === "\u007f" || char === "\b") text = text.slice(0, -1);
+        else text += char;
+      }
+    };
+    process.stdin.on("data", onData);
+    process.stdin.resume();
+  });
+}
+
+/** Profiles that name a stored key, as `id` strings. */
+function profilesUsingKey(keyId, options) {
+  const { profiles } = loadMerged(options);
+  return profiles.filter((profile) => profile.api === keyId).map((profile) => profile.id);
+}
+
+async function cmdKeys([sub = "list", id], options) {
+  switch (sub) {
+    case "list": {
+      const store = listKeys();
+      if (!store.ok) fail(store.error);
+      if (options.json) {
+        return printJson({
+          path: store.path,
+          keys: store.keys,
+          providers: PROVIDER_IDS.map((provider) => ({ id: provider, label: PROVIDERS[provider].label, harnesses: Object.keys(PROVIDERS[provider].harnesses) })),
+        });
+      }
+      const lines = store.keys.length === 0
+        ? ["no stored keys (herdr-loadout keys add <ID> --provider <P>)"]
+        : store.keys.map((key) => `${key.id} | ${key.providerLabel} | ${key.masked} | ${key.harnesses.join(", ")}${key.label ? ` | ${key.label}` : ""}`);
+      lines.push("", `providers: ${PROVIDER_IDS.map((provider) => `${provider} (${Object.keys(PROVIDERS[provider].harnesses).join(", ")})`).join(", ")}`);
+      process.stdout.write(`${lines.join("\n")}\n`);
+      return;
+    }
+    case "add": {
+      if (!id) fail("usage: herdr-loadout keys add <ID> --provider <P> [--label L]  (key on stdin)", EXIT_USAGE);
+      if (!options.provider) fail(`--provider is required: ${PROVIDER_IDS.join(" | ")}`, EXIT_USAGE);
+      const key = await readSecret(`${PROVIDERS[options.provider]?.label ?? options.provider} API key: `);
+      const result = saveKey({ id, provider: options.provider, key, label: options.label });
+      if (!result.ok) fail(result.error);
+      if (options.json) return printJson({ ok: true, id: result.id });
+      process.stdout.write(`stored key "${result.id}"; use it with: herdr-loadout set <profile> --api ${result.id}\n`);
+      return;
+    }
+    case "remove": {
+      if (!id) fail("usage: herdr-loadout keys remove <ID>", EXIT_USAGE);
+      const users = profilesUsingKey(id, options);
+      const result = removeKey(id);
+      if (!result.ok) fail(result.error);
+      if (options.json) return printJson({ ok: true, id, profiles: users });
+      process.stdout.write(`removed key "${id}"${users.length ? `; these profiles still name it and will not launch: ${users.join(", ")}` : ""}\n`);
+      return;
+    }
+    case "test": {
+      if (!id) fail("usage: herdr-loadout keys test <ID>", EXIT_USAGE);
+      const result = await testKey(id);
+      if (options.json) return printJson({ id, ...result });
+      process.stdout.write(`${result.ok ? "✓" : "✗"} ${id}: ${result.detail}\n`);
+      if (!result.ok) process.exit(EXIT_ERROR);
+      return;
+    }
+    default:
+      fail(`unknown keys command: ${sub} (list | add | remove | test)`, EXIT_USAGE);
+  }
 }
 
 /**
@@ -587,7 +932,9 @@ function cmdRemove(id, options) {
   const inGlobal = globalProfiles.some((entry) => entry?.id === id);
   const inProject = projectProfiles.some((entry) => entry?.id === id);
 
-  const result = deleteProfile(target.path, id);
+  // A global profile and this project's override of it go together or not at all.
+  const overrideRemoved = target.scope === "global" && inGlobal && inProject ? projectFile : null;
+  const result = deleteProfileFrom(overrideRemoved ? [overrideRemoved, target.path] : [target.path], id);
   if (!result.ok) {
     const errors =
       target.scope === "global" && !inGlobal && inProject
@@ -596,15 +943,28 @@ function cmdRemove(id, options) {
     return reportFailure(options, errors, { id, scope: target.scope });
   }
 
-  let overrideRemoved = null;
-  if (target.scope === "global" && inProject && deleteProfile(projectFile, id).ok) {
-    overrideRemoved = projectFile;
-  }
   if (options.json) {
     return printJson({ ok: true, id, scope: target.scope, removed: true, path: target.path, overrideRemoved });
   }
   process.stdout.write(`removed ${id} from ${target.path}\n`);
   if (overrideRemoved) process.stdout.write(`removed its project override from ${overrideRemoved}\n`);
+}
+
+/**
+ * Change where a profile is listed. The file written follows from the profile:
+ * the global file for a global profile (an override never changes the order),
+ * the project file for a project-only one.
+ */
+async function cmdMove(id, options) {
+  const given = [["direction", options.up ? "up" : null], ["direction", options.down ? "down" : null], ["before", options.before ?? null], ["after", options.after ?? null]].filter(([, value]) => value !== null);
+  if (given.length !== 1) fail("usage: herdr-loadout move <id> --up|--down|--before ID|--after ID", EXIT_USAGE);
+  loadLayers(options); // a broken config is reported before anything moves
+  const { loadEditorState, moveProfile } = await import("../src/core/editor.mjs");
+  const state = loadEditorState({ projectRoot: options.project ?? process.cwd(), globalPath: globalConfigPath() });
+  const result = moveProfile(state, id, Object.fromEntries(given));
+  if (!result.ok) reportFailure(options, [result.error], { id });
+  if (options.json) return printJson(result);
+  process.stdout.write(`${result.message}${result.moved ? ` (${result.path})` : ""}\n`);
 }
 
 /** Merge every profile from an existing config file into the target config. */
@@ -701,6 +1061,11 @@ async function main(argv) {
         project: { type: "string" },
         placement: { type: "string" },
         host: { type: "string" },
+        shell: { type: "string" },
+        pane: { type: "string" },
+        space: { type: "string" },
+        tab: { type: "string" },
+        cwd: { type: "string" },
         input: { type: "string" },
         from: { type: "string" },
         id: { type: "string" },
@@ -716,12 +1081,24 @@ async function main(argv) {
         sandbox: { type: "string" },
         "approval-policy": { type: "string" },
         "permission-mode": { type: "string" },
+        auth: { type: "string" },
+        api: { type: "string" },
+        label: { type: "string" },
         notes: { type: "string" },
         tag: { type: "string", multiple: true },
         "extra-arg": { type: "string", multiple: true },
         skill: { type: "string", multiple: true },
         env: { type: "string", multiple: true },
+        to: { type: "string" },
+        worker: { type: "string" },
+        profile: { type: "string" },
+        task: { type: "string" },
         help: { type: "boolean", short: "h" },
+        up: { type: "boolean" },
+        down: { type: "boolean" },
+        before: { type: "string" },
+        after: { type: "string" },
+        "claude-md": { type: "boolean" },
       },
     });
   } catch (error) {
@@ -771,13 +1148,34 @@ async function main(argv) {
       if (!id) fail("usage: herdr-loadout launch <id>", EXIT_USAGE);
       return cmdLaunch(id, options);
     }
+    case "command": {
+      const id = usePositionals[1];
+      if (!id) fail("usage: herdr-loadout command <id>", EXIT_USAGE);
+      return cmdCommand(id, options);
+    }
     case "exec": {
       const id = usePositionals[1];
       if (!id) fail("usage: herdr-loadout exec <id>", EXIT_USAGE);
       return cmdExec(id, options);
     }
+    case "env-value": {
+      const [id, key] = usePositionals.slice(1);
+      if (!id || !key) fail("usage: herdr-loadout env-value <id> <KEY>", EXIT_USAGE);
+      return cmdEnvValue(id, key, options);
+    }
     case "workflow":
       return cmdWorkflow(usePositionals[1], options);
+    case "task":
+      return cmdTask(usePositionals[1], usePositionals[2], options);
+    case "agents-md":
+      return cmdAgentsMd(usePositionals[1], options);
+    case "worker-check": {
+      const name = usePositionals[1];
+      if (!name) fail("usage: herdr-loadout worker-check <worker> [--profile ID] [--task DIR]", EXIT_USAGE);
+      return cmdWorkerCheck(name, options);
+    }
+    case "keys":
+      return cmdKeys(usePositionals.slice(1), options);
     case "editor": {
       const action = usePositionals[1];
       if (!action) fail("usage: herdr-loadout editor <action> [--input JSON]", EXIT_USAGE);
@@ -806,6 +1204,11 @@ async function main(argv) {
       const file = usePositionals[1];
       if (!file) fail("usage: herdr-loadout import <FILE|->", EXIT_USAGE);
       return cmdImport(file, options);
+    }
+    case "move": {
+      const id = usePositionals[1];
+      if (!id) fail("usage: herdr-loadout move <id> --up|--down|--before ID|--after ID", EXIT_USAGE);
+      return cmdMove(id, options);
     }
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);

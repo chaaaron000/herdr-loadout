@@ -28,11 +28,24 @@ Every profile needs all six. Writes fail without them.
 | `name` | display name |
 | `harness` | `claude`, `codex`, `opencode`, `omp`, `pi`, `agy` (Antigravity CLI), or `custom` |
 | `model` | model id the harness accepts |
-| `effort` | reasoning level; for an agy model id ending in a level (`gemini-3.8-flash-medium`) it is set from the id |
+| `effort` | reasoning level; for an agy model id ending in a level (`gemini-3.8-flash-medium`) it is set from the id. The editors show such a model once (`gemini-3.8-flash`) with its levels as Effort choices; the stored `model` keeps the full id |
 | `when_to_use` | the routing sentence a Director matches against |
 
 Optional: `avoid_when`, `cost` (`cheap`/`normal`/`expensive`), `provider`, `mode`,
-`extra_args`, `env`, `tags`, `skills`, `notes`, `sandbox`, `approval_policy`, `permission_mode`.
+`extra_args`, `env`, `tags`, `skills`, `notes`, `sandbox`, `approval_policy`, `permission_mode`, `api`, `auth`.
+
+`api` names a stored API key the harness runs on instead of its own sign-in: a DeepSeek key for
+`claude` (DeepSeek's Anthropic-compatible endpoint), a Google AI Studio key for `agy` (the Gemini
+API). Codex cannot take either: it speaks only the Responses API. Keys live in `keys.toml` beside
+the global config, never in a profile or project file. `herdr-loadout keys list` shows the stored
+ids (masked). Set a profile's key with `set <id> --api <key-id>`; an empty value goes back to the
+sign-in. With a key, the model must be one the provider lists (`deepseek-v4-pro`,
+`deepseek-flash`; agy: the Gemini API's models), and `launch <id>` fails its `API key` check when
+the key is missing or its provider cannot drive the harness. Never ask for, read, or write a key
+yourself: the user stores it with `keys add` (stdin) or the app editor's API keys page (`k`).
+
+`auth = "api-key"` is agy's older route, with the key from the profile's `env.GEMINI_API_KEY` or the
+worker's `GEMINI_API_KEY`. Prefer `api` for new profiles.
 
 `when_to_use` and `avoid_when` are load-bearing: they are what a Director reads when choosing.
 Write them as routing instructions, not documentation.
@@ -80,10 +93,11 @@ Conventions that keep the roster usable:
 - `--cost` reflects how expensive the model is, not how good it is: `cheap` for scouting and review,
   `normal` for implementation, `expensive` for hard design work.
 - `--tag` values feed the `--compact` routing line, so keep them short and task-shaped
-  (`implementation`, `review`, `research`).
+  (`implementation`, `qa`, `review`, `research`).
 
-**A reviewer must not share the implementer's model.** When adding a review profile next to an
-implementation profile, read the existing one first and choose a different harness or model.
+**A QA or review profile must not share the implementer's model.** When adding one next to an
+implementation profile, read the existing one first and choose a different harness or model. QA is
+the default check after implementation; a reviewer is for security-sensitive changes or on request.
 
 Arguments after `--` become `extra_args` verbatim. Flags whose values start with a dash need
 `--flag=value`.
@@ -102,8 +116,12 @@ use `--permission-mode` for Claude, OMP, or OpenCode. `$LOADOUT --help` lists th
 supported values; the TUI picker offers only values for the selected harness.
 An empty string explicitly inherits the harness setting, including in a project override.
 The new Claude/Codex fields replace their legacy `mode` value when present.
-After changing permissions, check `launch <id> --json`; its `args` and `env` are both
-required when starting the worker.
+After changing permissions, check `launch <id> --json`; it reports `args`, and `env` with every
+value masked as `***`.
+
+`env` values are often API keys. Set them with `--env KEY=VALUE` or in the editors' Env field,
+which shows each value as `***`; leaving `KEY=***` as it is keeps that value. Never echo a key back
+to the user or into a note.
 
 Read the profile before editing it, so you preserve fields you are not changing:
 
@@ -179,6 +197,10 @@ $LOADOUT list --compact          # the roster a Director will read
 `launch --json` is the only check that proves a profile can start on this machine. `validate` passing
 does not mean the model name is real.
 
+A change reaches only workers started after it. Workers already running on the profile keep the old
+settings and now fail `herdr-loadout worker-check <worker>`; an orchestrator replaces them before
+their next prompt. Say so when you report the change.
+
 Report the profile id and the file it landed in.
 
 ## Change the workflow
@@ -201,9 +223,18 @@ coordinate. It is Markdown, in two layers:
 Put the rule where the user said it applies; when they did not say, ask. After a change,
 `$LOADOUT workflow` prints exactly what orchestrators will read; report the file you changed.
 
+**Brief and report templates.** `herdr-loadout task new` fills `brief.md` and `report.md` from
+`<project>/.herdr/templates/brief.md` and `report.md` when they exist, else from the built-in ones.
+To change them for a project, copy the built-in file (`src/core/templates/` in the plugin root,
+`pluginRoot` in `$LOADOUT path`) there and edit it. `{{key}}` placeholders are filled in: `task`,
+`slug`, `date`, `host`, `host_label`, `orchestrator`, `worker`, `profile`, `dir`, `brief`,
+`report`, `prompt`, `notify`. An unknown key is left as written.
+
 ## Editing the TOML by hand
 
-The file is meant to be hand-edited; unknown keys survive every save. The interactive editor is for
+The file is meant to be hand-edited: a save changes only the keys and blocks it writes, so comments
+and unknown keys survive every save. A layout a save cannot edit as text (profiles written as an
+inline array, for example) is refused and the file is left as it was. The interactive editor is for
 a person; open it with the command for your host (see "Know your host" in the `herdr-loadout`
 skill):
 

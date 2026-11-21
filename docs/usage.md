@@ -60,4 +60,4 @@ herdr-loadout path
 | 프로젝트 설정 | `<project>/.herdr/loadout.toml` |
 | 모델 캐시 | `<HERDR_PLUGIN_STATE_DIR>/models/*.json` (TTL 5분) |
 
-전역 설정이 없으면 기본 템플릿(Builder / Junior / Reviewer / Scout)으로 자동 생성된다.
+전역 설정이 없으면 기본 템플릿(Builder / Junior / QA / Reviewer / Scout)으로 자동 생성된다.

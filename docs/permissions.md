@@ -39,13 +39,16 @@ Antigravity의 `--sandbox`(터미널 제한)는 값이 없는 스위치라 `extr
 하네스를 TUI에서 변경하면 기존 권한 값은 해제된다. CLI에서 하네스를 바꿀 때는
 해당 하네스에 맞는 권한 값을 함께 지정하거나 기존 값을 빈 문자열로 해제한다.
 
-`launch --json`은 권한을 검증하고 `args`와 `env`를 반환한다. `ok`가 true인 경우
-`args`를 `herdr agent start ... --` 뒤에 그대로 전달한다. `env`의 각 항목은 새 pane을
-만들 때 `herdr pane split --env 'KEY=VALUE'`로 전달한다. JSON을 포함한 값 전체를
-하나의 인자로 전달해야 한다. `launch`는 실행 명세를 반환하는 dry-run이다.
+`launch --json`은 권한을 검증하고 `args`와 `env`를 반환한다. `env`는 이름만 그대로이고 값은
+API 키일 수 있어 모두 `***`로 가린다. `ok`가 true인 경우 `args`를 `herdr agent start ... --`
+뒤에 그대로 전달한다. `env`는 `herdr-loadout command <id>`가 출력하는 `--env` 플래그로 새 pane에
+전달한다. 이 플래그는 실행될 때 `env-value`로 값을 읽으므로 출력에는 값이 나오지 않는다.
+`launch`는 실행 명세를 반환하는 dry-run이다.
 
 OpenCode는 프로필의 `env.OPENCODE_CONFIG_CONTENT` 또는 상속된 같은 환경변수에 있는
-JSON 객체의 다른 키를 보존하고 `permission`을 지정한 값으로 교체한다. 이 환경변수에
+JSON 객체의 다른 키를 보존하고 `permission`을 지정한 값으로 교체한다. OpenCode v2에서는
+같은 JSON에 `model`(`provider/model#effort`)도 넣고 `--standalone`을 붙인다. v2의 공유
+백그라운드 서버는 워커의 환경변수를 읽지 않기 때문이다. 이 환경변수에
 잘못된 JSON이 있으면 실행 검사가 실패한다. 하네스의 관리 정책·에이전트별 설정은
 하네스 자체 규칙을 따르며, `extra_args`는 기존과 같이 마지막에 전달된다.
 권한을 `extra_args`에도 중복 지정하면 하네스의 옵션 처리 규칙이 적용된다.

@@ -10,7 +10,7 @@ import { readConfigFile } from "../src/core/store.mjs";
 import { cleanup, tempDir } from "./helpers.mjs";
 
 for (const scenario of [
-  { harness: "claude", field: "permission_mode", initial: "plan", selected: "manual", cursor: 4, label: /Permissions/ },
+  { harness: "claude", field: "permission_mode", initial: "plan", selected: "manual", cursor: 5, label: /Permissions/ },
   { harness: "codex", field: "sandbox", initial: "workspace-write", selected: "read-only", cursor: 4, label: /Sandbox \(Codex\)/ },
   { harness: "codex", field: "approval_policy", initial: "on-request", selected: "never", cursor: 5, label: /Approval \(Codex\)/ },
 ]) {

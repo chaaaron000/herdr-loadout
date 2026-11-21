@@ -10,6 +10,9 @@ import path from "node:path";
 import { stateDir } from "./paths.mjs";
 import { KNOWN_HARNESSES } from "./schema.mjs";
 import { buildLaunchEnv, PERMISSION_FIELDS, permissionArgs, permissionValue, validatePermissions } from "./permissions.mjs";
+import { isOpencodeV2, opencodeServerArgs, parseVersion } from "./opencode.mjs";
+import { AGY_API_CATALOG, AGY_KEY_ENV, agyApiHome, agyApiListEnv, apiModelRows, catalogIdOf, discoverApiModels, usesApiKey } from "./agy.mjs";
+import { fetchProviderModels, maskKey, PROVIDERS, readKeys, resolveApi } from "./keys.mjs";
 
 import { CATALOG_TTL_MS, fetchCatalog, loadCatalog, modelsForProvider, readSnapshot, readSnapshotEntry } from "./modelsdev.mjs";
 
@@ -112,11 +115,11 @@ function cacheMode(options) {
   return { read: write && options.refresh !== true, write };
 }
 
-function writeCache(id, env, models) {
+function writeCache(id, env, models, extra = {}) {
   const file = cacheFile(id, env);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ fetchedAt: Date.now(), models }, null, 2));
+    fs.writeFileSync(file, JSON.stringify({ fetchedAt: Date.now(), ...extra, models }, null, 2));
   } catch {
     /* cache write failure must never break the CLI */
   }
@@ -385,6 +388,8 @@ const CATALOGS = {
     },
   },
 };
+// agy's Gemini API models: the same command, run in a home whose settings pick the API.
+CATALOGS[AGY_API_CATALOG] = { ...CATALOGS.agy, command: "agy", listEnv: agyApiListEnv, finish: apiModelRows };
 
 /**
  * Harnesses with no model list at all: the value stays free-form.
@@ -398,6 +403,8 @@ export const NO_CATALOG = ["pi"];
  */
 export const EFFORT_CAPABLE = ["claude", "codex", "omp", "agy"];
 
+const LEVEL_SUFFIX = /-(minimal|low|medium|high|xhigh|max)$/;
+
 /**
  * The effort a model id already fixes, or null.
  *
@@ -408,13 +415,86 @@ export const EFFORT_CAPABLE = ["claude", "codex", "omp", "agy"];
  */
 export function modelEffort(harness, model) {
   if (harness !== "agy" || typeof model !== "string") return null;
-  return /-(minimal|low|medium|high|xhigh|max)$/.exec(model)?.[1] ?? null;
+  return LEVEL_SUFFIX.exec(model)?.[1] ?? null;
 }
 
 /** The profile with its effort taken from the model id when the id fixes one. */
 export function withModelEffort(profile) {
   const fixed = modelEffort(profile?.harness, profile?.model);
   return fixed && profile.effort !== fixed ? { ...profile, effort: fixed } : profile;
+}
+
+/** An agy model id without its level suffix (`gemini-4-argon-high` -> `gemini-4-argon`). */
+export function modelBase(harness, model) {
+  const level = modelEffort(harness, model);
+  return level ? model.slice(0, -(level.length + 1)) : model;
+}
+
+/**
+ * agy's list as one row per model: `gemini-4-argon-high`, `-medium`, `-low`
+ * become `gemini-4-argon` with `efforts: ["high", "medium", "low"]`, so a
+ * picker shows the model once and the level is chosen as its effort.
+ * Ids without a level pass through unchanged.
+ */
+export function groupModelLevels(models) {
+  const rows = [];
+  const byBase = new Map();
+  for (const model of models) {
+    const level = LEVEL_SUFFIX.exec(model.id)?.[1];
+    if (!level) {
+      rows.push(model);
+      continue;
+    }
+    const base = model.id.slice(0, -(level.length + 1));
+    let row = byBase.get(base);
+    if (!row) {
+      // "Gemini 4 Argon (High)" -> "Gemini 4 Argon"
+      const label = String(model.label ?? "").replace(/\s*\([^()]*\)\s*$/, "") || base;
+      row = { ...model, id: base, label, efforts: [] };
+      byBase.set(base, row);
+      rows.push(row);
+    }
+    row.efforts.push(level);
+  }
+  return rows;
+}
+
+/** The provider behind a catalog id such as `api-deepseek`, or null. */
+function providerOfCatalog(catalogId) {
+  const match = /^api-(.+)$/.exec(String(catalogId ?? ""));
+  return match && PROVIDERS[match[1]]?.modelsUrl ? match[1] : null;
+}
+
+/**
+ * A provider's model list without a request: the cached answer, else the
+ * models known when this was written.
+ */
+function providerModelsOffline(provider, catalogId, env, useCache = true) {
+  const cached = useCache ? readCache(catalogId, env) : null;
+  if (cached) return { ok: true, models: cached.models, cached: true };
+  return { ok: true, models: PROVIDERS[provider].models ?? [], static: true };
+}
+
+/**
+ * A provider's model list, asked with the first key stored for that provider.
+ * (`options.apiKey` is agy's Gemini key and never goes to another provider.)
+ * A failed request falls back to the offline list and says why.
+ */
+async function providerModels(provider, catalogId, options, cache) {
+  const env = options.env ?? process.env;
+  if (cache.read) {
+    const cached = readCache(catalogId, env);
+    if (cached) return { ok: true, models: cached.models, cached: true };
+  }
+  const key = readKeys(env).keys.find((entry) => entry.provider === provider)?.key;
+  const offline = options.offline ?? env.HERDR_LOADOUT_OFFLINE === "1";
+  if (!key || offline) return { ...providerModelsOffline(provider, catalogId, env, cache.read), revalidate: Boolean(key) };
+  const result = await fetchProviderModels(provider, key, options);
+  if (!result.ok || result.models.length === 0) {
+    return { ...providerModelsOffline(provider, catalogId, env, cache.read), error: result.error ?? "empty model list" };
+  }
+  if (cache.write) writeCache(catalogId, env, result.models);
+  return { ok: true, models: result.models };
 }
 
 /**
@@ -429,6 +509,8 @@ export function withModelEffort(profile) {
 export function listModels(harness, options = {}) {
   const env = options.env ?? process.env;
   const cache = cacheMode(options);
+  const provider = providerOfCatalog(harness);
+  if (provider) return providerModelsOffline(provider, harness, env);
   // claude has no listing command. Prefer the models.dev snapshot (the same
   // source omp reads), then omp itself, then the curated aliases.
   if (harness === "claude") {
@@ -453,15 +535,16 @@ export function listModels(harness, options = {}) {
     const cached = readCache(harness, env);
     if (cached) return { ok: true, models: cached.models, cached: true, revalidate: true };
   }
-  const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
-  const result = run(executablePath, catalog.args, { ...options, env, executablePath });
+  const executablePath = options.executablePath ?? which(catalog.command ?? harness, { env }) ?? harness;
+  const result = run(executablePath, catalog.args, { ...options, env: catalog.listEnv ? catalog.listEnv(env) : env, executablePath });
   return catalogFromOutput(harness, catalog, result, cache.write, env);
 }
 
 function catalogFromOutput(harness, catalog, result, useCache, env) {
   if (!result.ok) return { ok: false, models: [], error: result.error };
   try {
-    const models = catalog.parse(result.stdout);
+    const parsed = catalog.parse(result.stdout);
+    const models = catalog.finish ? catalog.finish(parsed, env) : parsed;
     if (models.length === 0) return { ok: false, models: [], error: "empty model catalog" };
     if (useCache) writeCache(harness, env, models);
     return { ok: true, models };
@@ -483,14 +566,25 @@ function catalogFromOutput(harness, catalog, result, useCache, env) {
 export async function listModelsAsync(harness, options = {}) {
   const env = options.env ?? process.env;
   const cache = cacheMode(options);
+  const provider = providerOfCatalog(harness);
+  if (provider) return providerModels(provider, harness, options, cache);
   if (harness === "claude") {
     if (cache.read) {
       const cached = readCache(harness, env);
-      if (cached) return { ok: true, models: cached.models, cached: true };
+      if (cached) return claudeCacheHit(cached);
     }
-    const snapshot = options.catalog ? { data: options.catalog, ageMs: 0 } : readSnapshotEntry(options);
+    let snapshot = options.catalog ? { data: options.catalog, ageMs: 0 } : readSnapshotEntry(options);
     const offline = options.offline ?? env.HERDR_LOADOUT_OFFLINE === "1";
-    if (!offline && (!snapshot || snapshot.ageMs > CATALOG_TTL_MS)) void fetchCatalog(options);
+    if (!offline && snapshotExpired(snapshot)) {
+      // An explicit refresh waits for the new snapshot, so a model released
+      // since the last fetch shows up in this answer, not the next one.
+      if (options.refresh === true) {
+        const data = await fetchCatalogOnce(options);
+        if (data) snapshot = { data, ageMs: 0 };
+      } else {
+        void fetchCatalogOnce(options);
+      }
+    }
 
     let result = null;
     const fromModelsDev = snapshot ? claudeCatalogFromModelsDev({ ...options, catalog: snapshot.data }) : null;
@@ -504,8 +598,11 @@ export async function listModelsAsync(harness, options = {}) {
       if (fromOmp) result = { ok: true, models: fromOmp, derived: "omp" };
     }
     if (!result) return { ok: true, models: STATIC_CATALOGS.claude, static: true };
-    if (cache.write) writeCache(harness, env, result.models);
-    return result;
+    // Remember how old the snapshot behind these rows was, so a cache hit can
+    // still tell the caller to look again once that snapshot has expired.
+    const snapshotAt = result.derived === "models.dev" ? Date.now() - snapshot.ageMs : undefined;
+    if (cache.write) writeCache(harness, env, result.models, { snapshotAt });
+    return result.derived === "models.dev" && snapshotExpired(snapshot) ? { ...result, revalidate: true } : result;
   }
   const fixed = STATIC_CATALOGS[harness];
   if (fixed) {
@@ -519,9 +616,48 @@ export async function listModelsAsync(harness, options = {}) {
     const cached = readCache(harness, env);
     if (cached) return { ok: true, models: cached.models, cached: true, revalidate: true };
   }
-  const executablePath = options.executablePath ?? which(harness, { env }) ?? harness;
-  const result = await runAsync(executablePath, catalog.args, { ...options, env, executablePath });
-  return catalogFromOutput(harness, catalog, result, cache.write, env);
+  // agy's API list is fixed at its build: ask the API first, so a model released
+  // since then is registered before `agy models` runs. Offline, the models found
+  // last time still list, and the caller is told to ask again.
+  let stale = false;
+  if (harness === AGY_API_CATALOG) {
+    const apiKey = options.apiKey || env[AGY_KEY_ENV];
+    if (apiKey) {
+      if (options.offline ?? env.HERDR_LOADOUT_OFFLINE === "1") stale = true;
+      else await discoverApiModels(env, { ...options, apiKey });
+    }
+  }
+  const executablePath = options.executablePath ?? which(catalog.command ?? harness, { env }) ?? harness;
+  const result = await runAsync(executablePath, catalog.args, { ...options, env: catalog.listEnv ? catalog.listEnv(env) : env, executablePath });
+  const answer = catalogFromOutput(harness, catalog, result, cache.write, env);
+  return stale && answer.ok ? { ...answer, revalidate: true } : answer;
+}
+
+function snapshotExpired(snapshot) {
+  return !snapshot || snapshot.ageMs > CATALOG_TTL_MS;
+}
+
+/**
+ * claude's cached rows. Rows derived from a snapshot that has since expired
+ * carry `revalidate: true`: the snapshot may lack models released after it,
+ * and a caller that asks again with `refresh: true` gets a new one.
+ */
+function claudeCacheHit(cached) {
+  const stale = typeof cached.snapshotAt === "number" && Date.now() - cached.snapshotAt > CATALOG_TTL_MS;
+  return stale ? { ok: true, models: cached.models, cached: true, revalidate: true } : { ok: true, models: cached.models, cached: true };
+}
+
+// One models.dev fetch per state dir at a time: the background refresh and an
+// explicit one right behind it would otherwise download the catalog twice.
+const catalogFetches = new Map();
+function fetchCatalogOnce(options) {
+  const key = stateDir(options.env ?? process.env);
+  let pending = catalogFetches.get(key);
+  if (!pending) {
+    pending = fetchCatalog(options).finally(() => catalogFetches.delete(key));
+    catalogFetches.set(key, pending);
+  }
+  return pending;
 }
 
 /**
@@ -531,9 +667,11 @@ export async function listModelsAsync(harness, options = {}) {
  */
 export function cachedModels(harness, options = {}) {
   const env = options.env ?? process.env;
+  const provider = providerOfCatalog(harness);
+  if (provider) return providerModelsOffline(provider, harness, env);
   if (harness === "claude") {
     const cached = readCache(harness, env);
-    if (cached) return { ok: true, models: cached.models, cached: true };
+    if (cached) return claudeCacheHit(cached);
     const fromModelsDev = claudeCatalogFromModelsDev(options);
     return fromModelsDev ? { ok: true, models: fromModelsDev, derived: "models.dev" } : null;
   }
@@ -589,8 +727,11 @@ export function buildLaunchArgs(profile, options = {}) {
       break;
     }
     case "opencode": {
-      if (profile.model) args.push("-m", profile.model);
-      // interactive opencode has no effort flag; `--variant` exists only on `run`
+      // v2 has no `-m` on its TUI: model and variant go through config
+      // (buildLaunchEnv), which only a `--standalone` server reads.
+      // v1's TUI has no effort flag; `--variant` exists only on `run`.
+      if (isOpencodeV2(options.version)) args.push(...opencodeServerArgs(profile, options.version));
+      else if (profile.model) args.push("-m", profile.model);
       break;
     }
     case "omp": {
@@ -602,6 +743,8 @@ export function buildLaunchArgs(profile, options = {}) {
       if (profile.model) args.push("--model", profile.model);
       // an id like `gemini-3.8-flash-medium` already carries its level
       if (effort && !modelEffort(harness, profile.model)) args.push("--effort", effort);
+      // A settings file, not inline JSON: no shell along the way can strip its quotes.
+      if (usesApiKey(profile)) args.push("--settings", agyApiHome(options.env).settings);
       break;
     }
     default: {
@@ -628,6 +771,25 @@ function modeArgs(harness, mode) {
   }
 }
 
+/** Harnesses whose launch flags depend on the installed major version. */
+const VERSIONED = ["opencode"];
+const versionMemo = new Map();
+
+/**
+ * The installed version of a harness whose flags changed between releases, or
+ * null when it does not matter or cannot be read. `options.harnessVersions`
+ * (`{ opencode: "2.3.0" }`) overrides the lookup.
+ */
+export function harnessVersion(harness, executablePath, options = {}) {
+  if (options.harnessVersions && Object.hasOwn(options.harnessVersions, harness)) return options.harnessVersions[harness];
+  if (!VERSIONED.includes(harness) || !executablePath) return null;
+  if (versionMemo.has(executablePath)) return versionMemo.get(executablePath);
+  const result = run(executablePath, ["--version"], { ...options, executablePath, timeoutMs: 10000 });
+  const version = result.ok ? parseVersion(result.stdout) : null;
+  versionMemo.set(executablePath, version);
+  return version;
+}
+
 /**
  * Test Launch dry-run: verify the executable, model, and effort are usable
  * without starting an agent.
@@ -636,28 +798,34 @@ function modeArgs(harness, mode) {
 export function dryRun(profile, options = {}) {
   const host = options.host ?? "herdr";
   const checks = [];
+  const harness = profile.harness ?? "custom";
+  const launchOptions = { ...options, preferNoSpaces: true };
+  const detected = detectHarnesses(launchOptions).find((entry) => entry.id === harness);
+  const executablePath = detected?.path ?? (harness === "custom" ? which(profile.model ?? "", launchOptions) : null);
+  const version = harnessVersion(harness, executablePath, options);
+
+  const inheritedEnv = options.env ?? process.env;
+  const api = resolveApi(profile, inheritedEnv);
   const permissionErrors = validatePermissions(profile);
   let env = {};
   try {
-    env = buildLaunchEnv(profile, options.env ?? process.env);
+    env = buildLaunchEnv(profile, inheritedEnv, { version });
   } catch (error) {
     permissionErrors.push(error.message);
   }
+  // A stored key's environment comes first; the profile's own env can still override it.
+  if (api?.ok) env = { ...api.env, ...env };
   checks.push({
     label: "permissions",
     ok: permissionErrors.length === 0,
     detail: permissionErrors.length ? permissionErrors.join("; ") :
       PERMISSION_FIELDS.map((field) => permissionValue(profile, field)).filter(Boolean).join(", ") || "inherit harness settings",
   });
-  const harness = profile.harness ?? "custom";
-  const launchOptions = { ...options, preferNoSpaces: true };
-  const detected = detectHarnesses(launchOptions).find((entry) => entry.id === harness);
-  const executablePath = detected?.path ?? (harness === "custom" ? which(profile.model ?? "", launchOptions) : null);
 
   checks.push({
     label: `${harness} executable`,
     ok: Boolean(executablePath),
-    detail: executablePath ?? "not found on PATH",
+    detail: executablePath ? `${executablePath}${version ? ` (v${version})` : ""}` : "not found on PATH",
   });
 
   // A path with a space cannot be launched by Herdr on Windows, so surface it
@@ -675,10 +843,28 @@ export function dryRun(profile, options = {}) {
     });
   }
 
-  const catalog = CATALOGS[harness] ? listModels(harness, options) : null;
+  if (api) {
+    checks.push({
+      label: "API key",
+      ok: api.ok,
+      detail: api.ok ? `${PROVIDERS[api.provider].label} key "${api.entry.id}" (${maskKey(api.entry.key)})` : api.error,
+    });
+  } else if (usesApiKey(profile)) {
+    const source = env[AGY_KEY_ENV] ? "the profile" : inheritedEnv[AGY_KEY_ENV] ? `${AGY_KEY_ENV} in the environment` : null;
+    checks.push({
+      label: "API key",
+      ok: Boolean(source),
+      detail: source ? `from ${source}` : `missing: set the profile's API key, or ${AGY_KEY_ENV} for the worker`,
+    });
+  }
+
+  const catalogId = catalogIdOf(profile, inheritedEnv);
+  const catalog = CATALOGS[catalogId] || providerOfCatalog(catalogId) ? listModels(catalogId, options) : null;
   if (profile.model) {
     if (catalog?.ok && catalog.models.length > 0) {
-      const match = catalog.models.find((model) => model.id === profile.model);
+      // `[1m]` is Claude Code's context marker, not part of the provider's id.
+      const wanted = profile.model.replace(/\[1m\]$/i, "");
+      const match = catalog.models.find((model) => model.id === wanted);
       checks.push({
         label: `model "${profile.model}"`,
         ok: Boolean(match),
@@ -705,7 +891,8 @@ export function dryRun(profile, options = {}) {
   } else if (profile.effort && harness !== "custom") {
     const known = effortLevels(harness, { models: catalog?.models });
     const ok = known.length === 0 || known.includes(profile.effort);
-    const carried = EFFORT_CAPABLE.includes(harness);
+    // OpenCode v2 carries the effort as the model's variant (`provider/model#effort`).
+    const carried = EFFORT_CAPABLE.includes(harness) || (harness === "opencode" && isOpencodeV2(version) && Boolean(profile.model));
     checks.push({
       label: `effort "${profile.effort}"`,
       ok,
@@ -717,7 +904,9 @@ export function dryRun(profile, options = {}) {
     });
   }
 
-  const args = buildLaunchArgs(profile, { host });
+  // A provider can need its own spelling of the model (DeepSeek's `[1m]` window).
+  const launched = api?.ok && api.model ? { ...profile, model: api.model } : profile;
+  const args = buildLaunchArgs(launched, { host, version, env: inheritedEnv });
   checks.push({
     label: "launch command",
     ok: Boolean(executablePath),

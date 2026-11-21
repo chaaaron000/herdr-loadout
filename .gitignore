@@ -4,7 +4,7 @@ dist/
 .env
 .DS_Store
 Thumbs.db
-graft/
+/graft/
 
 # Local agent / editor tooling. These carry machine-specific paths and settings,
 # so they stay out of the repo even when a contributor uses the same tools.

@@ -12,7 +12,8 @@ import { visibleWindow } from "../core/window.mjs";
 import { layoutFor, listWindow as listWindowFor } from "../core/layout.mjs";
 import { pickerView, nextSort, SORT_LABELS } from "../core/picker.mjs";
 import { clipStartToWidth, clipToWidth, displayWidth, padToWidth } from "../core/textwidth.mjs";
-import { PERMISSION_FIELDS, permissionValue } from "../core/permissions.mjs";
+import { PERMISSION_FIELDS } from "../core/permissions.mjs";
+import { catalogIdOf, findApiKey } from "../core/agy.mjs";
 import {
   applyFieldValue,
   applyRemoval,
@@ -22,11 +23,12 @@ import {
   draftIsDirty,
   editableFields,
   fieldNames,
+  fieldDisplay,
   fieldOptions,
-  fieldValueOf,
-  formatListInputValue,
+  fieldText,
   labelOf,
   loadEditorState,
+  moveProfile,
   openDraft,
   planRemoval,
   revertField,
@@ -133,7 +135,9 @@ function ListView({ profiles, selected, detection, globalProfiles, projectPath, 
     rows.push(
       h(
         Box,
-        { key: profile.id, flexDirection: "column", marginBottom: layout?.compact ? 0 : 1 },
+        // Never squeezed: a shrunk entry loses its name line first, which hid
+        // the whole roster and the selection in a narrow pane.
+        { key: profile.id, flexDirection: "column", flexShrink: 0, marginBottom: layout?.compact ? 0 : 1 },
         h(
           Text,
           { inverse: isActive },
@@ -143,7 +147,8 @@ function ListView({ profiles, selected, detection, globalProfiles, projectPath, 
         h(
           Text,
           { dimColor: !isActive },
-          `    ${mark} ${profile.harness} · ${profile.model} · ${profile.effort} · ${profile.cost ?? "normal"}`,
+          // One row per line, as the list window counts them: clip, never wrap.
+          clipToWidth(`    ${mark} ${profile.harness} · ${profile.model} · ${profile.effort} · ${profile.cost ?? "normal"}`, cols - 4),
         ),
         isActive && showDetail
           ? h(Text, { color: "gray" }, `    ${clipToWidth((profile.when_to_use ?? "").split("\n")[0], Math.max(20, cols - 10))}`)
@@ -201,7 +206,7 @@ function scopeLineFor(kind, projectTarget, width) {
 function EditorView({ draft, dirty, cursor, fieldState, catalogs, detection, editKind, globalProfile, projectTarget, layout }) {
   const harness = draft.harness ?? "claude";
   const fields = editableFields(draft);
-  const catalog = catalogs[harness];
+  const catalog = catalogs[catalogIdOf(draft)];
   const options = fieldOptions(draft, cursor, catalog, detection);
   const scopeLine = scopeLineFor(editKind, projectTarget, Math.max(20, (layout?.cols ?? 80) - 4));
   // Fields that no longer match the global profile; empty when there is none to compare.
@@ -210,7 +215,7 @@ function EditorView({ draft, dirty, cursor, fieldState, catalogs, detection, edi
   const globalNote =
     globalProfile && differs.has(activeField)
       ? clipToWidth(
-          `≠ global: ${formatListInputValue(activeField, fieldValueOf(globalProfile, activeField)) || "(unset)"}  ·  r reverts this field`,
+          `≠ global: ${fieldText(globalProfile, activeField) || "(unset)"}  ·  r reverts this field`,
           Math.max(20, (layout?.cols ?? 80) - 4),
         )
       : "";
@@ -264,9 +269,7 @@ function EditorView({ draft, dirty, cursor, fieldState, catalogs, detection, edi
         const rows = fields.slice(fieldWin.start, fieldWin.end).map((field, i) => {
           const index = fieldWin.start + i;
           const editing = fieldState.mode === "editing" && index === cursor;
-          const shown = editing ? fieldState.buffer : PERMISSION_FIELDS.includes(field)
-            ? permissionValue(draft, field) || "inherit"
-            : draft[field];
+          const shown = editing ? fieldState.buffer : fieldDisplay(draft, field);
           const active = index === cursor;
           if (!stacked) {
             return h(Field, { key: field, label: labelOf(field), value: shown, active, differs: differs.has(field) });
@@ -420,23 +423,26 @@ export default function App({ initialProject }) {
           noCatalog: Boolean(catalog.noCatalog),
         },
       }));
-    listModelsAsync(harness, { signal }).then((catalog) => {
+    // agy's Gemini models can be looked up with any Gemini key at hand; a
+    // provider's list (api-deepseek) uses that provider's stored key.
+    const apiKey = findApiKey(process.env, profiles);
+    listModelsAsync(harness, { signal, apiKey }).then((catalog) => {
       if (signal.aborted) return;
       show(catalog);
       // A cached list can predate a provider login or logout, so read the CLI
       // once more behind it. A failed read keeps the cached rows.
       if (!catalog.revalidate) return;
-      listModelsAsync(harness, { signal, refresh: true }).then((fresh) => {
+      listModelsAsync(harness, { signal, refresh: true, apiKey }).then((fresh) => {
         if (!signal.aborted && fresh.ok) show(fresh);
       });
     });
   };
 
   // The list never needs a catalog; only the editor's pickers and the detect view do.
-  const editorHarness = tab === "edit" ? draft?.harness : undefined;
+  const editorCatalog = tab === "edit" && draft ? catalogIdOf(draft) : undefined;
   useEffect(() => {
-    ensureCatalog(editorHarness);
-  }, [editorHarness]);
+    ensureCatalog(editorCatalog);
+  }, [editorCatalog]);
   useEffect(() => {
     if (tab !== "detect") return;
     for (const entry of detection) if (entry.detected) ensureCatalog(entry.id);
@@ -482,7 +488,7 @@ export default function App({ initialProject }) {
     // ---- editor ----
     if (tab === "edit" && draft) {
       const field = fields[cursor];
-      const catalog = catalogs[draft.harness];
+      const catalog = catalogs[catalogIdOf(draft)];
       const options = fieldOptions(draft, cursor, catalog, detection);
 
       // Enter on a field that has options opens the picker; a field without
@@ -491,9 +497,9 @@ export default function App({ initialProject }) {
         setFieldState((prev) => ({
           ...prev,
           mode: options.length > 0 ? "picking" : "editing",
-          buffer: options.length > 0 ? "" : formatListInputValue(field, draft[field]),
-          optionIndex: PERMISSION_FIELDS.includes(field)
-            ? Math.max(0, options.findIndex((row) => row.id === (permissionValue(draft, field) || "inherit")))
+          buffer: options.length > 0 ? "" : fieldText(draft, field),
+          optionIndex: PERMISSION_FIELDS.includes(field) || field === "auth" || field === "api"
+            ? Math.max(0, options.findIndex((row) => row.id === fieldDisplay(draft, field)))
             : 0,
           optionOffset: 0,
           query: "",
@@ -508,7 +514,7 @@ export default function App({ initialProject }) {
         }
         if (key.return) {
           const raw = fieldState.buffer;
-          setDraft((prev) => applyFieldValue(prev, field, raw));
+          setDraft((prev) => applyFieldValue(prev, field, raw, catalog));
           setFieldState((prev) => ({ ...prev, mode: "fields", buffer: "" }));
           return;
         }
@@ -549,7 +555,7 @@ export default function App({ initialProject }) {
           if (key.return) {
             const row = shown[index];
             if (row) {
-              setDraft((prev) => applyFieldValue(prev, field, row.id));
+              setDraft((prev) => applyFieldValue(prev, field, row.id, catalog));
               setFieldState((prev) => ({ ...prev, mode: "fields", searching: false, optionIndex: 0, optionOffset: 0, query: "" }));
               return;
             }
@@ -612,7 +618,7 @@ export default function App({ initialProject }) {
           const row = shown[index];
           // Refuse to write an absent row: the picker may have no options yet.
           if (!row) return;
-          setDraft((prev) => applyFieldValue(prev, field, row.id));
+          setDraft((prev) => applyFieldValue(prev, field, row.id, catalog));
           setFieldState((prev) => ({ ...prev, mode: "fields", optionIndex: 0, optionOffset: 0, query: "" }));
           return;
         }
@@ -759,6 +765,14 @@ export default function App({ initialProject }) {
       setMessage(plan.question);
     } else if ((input === "e" || key.return) && selectedProfile) startEditing(openDraft("edit", selectedProfile));
     else if (input === "c" && selectedProfile) startEditing(openDraft("copy", selectedProfile));
+    else if ((input === "[" || input === "]") && selectedProfile) {
+      // The selection follows the profile to its new place.
+      const result = moveProfile(editorState, selectedProfile.id, { direction: input === "[" ? "up" : "down" });
+      setMessage(result.ok ? result.message : result.error);
+      if (!result.ok) return;
+      setSelected(result.index);
+      if (result.moved) setReload((value) => value + 1);
+    }
   });
 
   // A pane too small for the frame cannot render any layout correctly; say so
@@ -773,6 +787,11 @@ export default function App({ initialProject }) {
       h(Text, { color: "white" }, "quit"),
     );
   }
+
+  // The list's row budget leaves one row for a status message; a message that
+  // wraps takes its extra rows from the list instead of pushing it past the frame.
+  const messageRows = message ? wrappedRows(message, layout.cols - 4) : 0;
+  const listLayout = messageRows > 1 ? { ...layout, listRows: Math.max(2, layout.listRows - (messageRows - 1)) } : layout;
 
   const body =
     tab === "edit" && draft
@@ -790,7 +809,7 @@ export default function App({ initialProject }) {
         })
       : tab === "detect"
         ? h(DetectView, { detection, catalogs, layout })
-        : h(ListView, { profiles, selected, detection, globalProfiles, projectPath, projectTarget, layout });
+        : h(ListView, { profiles, selected, detection, globalProfiles, projectPath, projectTarget, layout: listLayout });
 
   const canRevert = Boolean(draftGlobal) && differingFields(draft, draftGlobal).has(fields[cursor]);
   // A third entry is the terse label used when the line would not fit the pane.
@@ -855,12 +874,14 @@ export default function App({ initialProject }) {
                 ["a", "add"],
                 ["c", "copy"],
                 ["d", "delete", "del"],
+                ["[ ]", "reorder", "order"],
                 ...(selectedProfile?.origin === "project-override" ? [["r", "reset"]] : []),
                 ["j", "detect"],
                 ["q", "quit"],
               ],
               layout.cols - 4,
-              ["j", "c", "a"],
+              // Lowest value first; `[ ]` is never dropped, nothing else on screen names it.
+              ["j", "c", "a", "↑↓", "d", "r"],
             );
 
   return h(
@@ -910,6 +931,24 @@ function fitHints(items, width, dropOrder = []) {
     current = current.filter(([item]) => item !== key);
   }
   return current;
+}
+
+/** Rows `text` takes when Ink word-wraps it to `width` columns. */
+function wrappedRows(text, width) {
+  let rows = 1;
+  let used = 0;
+  for (const word of String(text).split(" ")) {
+    const size = displayWidth(word);
+    const needed = used === 0 ? size : used + 1 + size;
+    if (needed <= width) {
+      used = needed;
+      continue;
+    }
+    if (used > 0) rows++;
+    rows += Math.max(0, Math.ceil(size / width) - 1);
+    used = size % width || Math.min(size, width);
+  }
+  return rows;
 }
 
 export { App };

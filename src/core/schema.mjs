@@ -6,10 +6,12 @@
  */
 import { parse, stringify } from "smol-toml";
 import { PERMISSION_FIELDS, validatePermissions } from "./permissions.mjs";
+import { validateAuth } from "./agy.mjs";
+import { API_HARNESSES, KEY_ID_PATTERN } from "./keys.mjs";
 
 export const COSTS = ["cheap", "normal", "expensive"];
 export const REQUIRED_FIELDS = ["id", "name", "harness", "model", "effort", "when_to_use"];
-export const OPTIONAL_SCALAR_FIELDS = ["avoid_when", "cost", "provider", "mode", "notes", ...PERMISSION_FIELDS];
+export const OPTIONAL_SCALAR_FIELDS = ["avoid_when", "cost", "provider", "mode", "notes", "auth", "api", ...PERMISSION_FIELDS];
 export const OPTIONAL_ARRAY_FIELDS = ["extra_args", "tags", "skills"];
 export const OPTIONAL_MAP_FIELDS = ["env"];
 export const KNOWN_FIELDS = new Set([
@@ -26,6 +28,17 @@ export const KNOWN_HARNESSES = ["claude", "codex", "opencode", "omp", "pi", "agy
 
 export function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Set `key` as an own property. Plain `obj[key] = value` with the key
+ * `__proto__` changes the prototype instead and the entry is lost, while TOML
+ * and JSON both allow that key; every copy of a parsed table goes through this
+ * (or `Object.fromEntries`, spread) so the key survives.
+ */
+export function setOwn(obj, key, value) {
+  Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+  return obj;
 }
 
 /**
@@ -88,6 +101,15 @@ export function validateProfile(profile, options = {}) {
     }
   }
   errors.push(...validatePermissions(profile).filter((error) => !errors.includes(error)));
+  errors.push(...validateAuth(profile).filter((error) => !errors.includes(error)));
+  // Only the shape is checked here; whether the key exists is a launch check,
+  // since keys live outside the config and can be added after the profile.
+  if (typeof profile.api === "string" && profile.api !== "") {
+    if (!KEY_ID_PATTERN.test(profile.api)) errors.push(`api "${profile.api}" must name a stored key (${KEY_ID_PATTERN})`);
+    else if (profile.harness && !API_HARNESSES.includes(profile.harness)) {
+      errors.push(`api is supported by ${API_HARNESSES.join(", ")}, not ${profile.harness}`);
+    }
+  }
   return { errors };
 }
 
@@ -136,7 +158,7 @@ export function defaultTemplate(now = new Date()) {
         cost: "expensive",
         when_to_use:
           "Default implementation worker: scoped features, refactoring, bug fixes, design decisions, and difficult bugs. Splits large work across junior workers it runs as team members.",
-        avoid_when: "Pure research, independent review, or narrow edits a junior can handle.",
+        avoid_when: "Pure research, QA, code review, or narrow edits a junior can handle.",
         tags: ["implementation", "refactor", "design"],
       },
       {
@@ -148,8 +170,20 @@ export function defaultTemplate(now = new Date()) {
         cost: "normal",
         when_to_use:
           "Light implementation that follows existing patterns, and slices of a larger task handed out by a builder.",
-        avoid_when: "Design decisions, difficult bugs, pure research, or independent review.",
+        avoid_when: "Design decisions, difficult bugs, pure research, QA, or code review.",
         tags: ["implementation", "light"],
+      },
+      {
+        id: "qa",
+        name: "QA",
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        effort: "high",
+        cost: "normal",
+        when_to_use:
+          "Independent QA after substantial implementation: writes scenarios from the brief before reading the code, runs them against the real CLI and host, and turns every bug it finds into a regression test.",
+        avoid_when: "Changing source code (fixes go back to the implementer), work this profile implemented, or pure research.",
+        tags: ["qa", "testing"],
       },
       {
         id: "reviewer",
@@ -158,9 +192,10 @@ export function defaultTemplate(now = new Date()) {
         model: "gpt-6.1-sol",
         effort: "medium",
         cost: "cheap",
-        when_to_use: "Independent review after substantial implementation.",
-        avoid_when: "Initial implementation.",
-        tags: ["review"],
+        when_to_use:
+          "Code review of security-sensitive changes (shell quoting, secrets, permissions), or when the user asks for a review.",
+        avoid_when: "Routine changes, which get QA instead, and initial implementation.",
+        tags: ["review", "security"],
       },
       {
         id: "scout",
@@ -170,7 +205,7 @@ export function defaultTemplate(now = new Date()) {
         effort: "low",
         cost: "cheap",
         when_to_use: "Repository exploration, locating relevant files, and impact analysis.",
-        avoid_when: "Writing or reviewing code.",
+        avoid_when: "Writing, testing, or reviewing code.",
         tags: ["research"],
       },
     ],

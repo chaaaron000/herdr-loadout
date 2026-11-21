@@ -10,9 +10,8 @@ import { OPTIONAL_ARRAY_FIELDS, OPTIONAL_MAP_FIELDS, KNOWN_FIELDS } from "./sche
 function clone(value) {
   if (Array.isArray(value)) return value.map(clone);
   if (value && typeof value === "object") {
-    const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = clone(item);
-    return out;
+    // fromEntries keeps a key named `__proto__`; bracket assignment would drop it.
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
   }
   return value;
 }

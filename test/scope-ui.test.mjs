@@ -49,8 +49,11 @@ when_to_use = "3D work."
 const DOWN = "\u001b[B";
 const ESC = "\u001b";
 
-/** Run the TUI against a temp global config and a temp project with its own config. */
-async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
+/**
+ * Run the TUI against a temp global config and a temp project with its own config.
+ * `pane: {rows, cols}` also sizes the terminal the TUI lays itself out for.
+ */
+async function withApp(fn, { project = PROJECT, rows = 30, cols = 100, pane = null } = {}) {
   const dir = tempDir();
   const keys = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "HERDR_LOADOUT_OFFLINE", "PATH"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -62,6 +65,11 @@ async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
   const stdout = new PassThrough();
   stdout.columns = cols;
   stdout.rows = rows;
+  if (pane) {
+    stdout.columns = pane.cols;
+    stdout.rows = pane.rows;
+  }
+  const paneSize = ["columns", "rows"].map((key) => [key, Object.getOwnPropertyDescriptor(process.stdout, key)]);
   const state = { screen: "" };
   stdout.on("data", (chunk) => {
     state.screen += chunk.toString();
@@ -73,6 +81,10 @@ async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(dir, "state");
     process.env.HERDR_LOADOUT_OFFLINE = "1"; // no catalog refresh over the network
     process.env.PATH = ""; // never start a real harness
+    if (pane) {
+      Object.defineProperty(process.stdout, "columns", { value: pane.cols, configurable: true });
+      Object.defineProperty(process.stdout, "rows", { value: pane.rows, configurable: true });
+    }
     const globalFile = path.join(dir, "loadout.toml");
     const projectRoot = path.join(dir, "proj");
     const projectFile = path.join(projectRoot, ".herdr", "loadout.toml");
@@ -103,6 +115,10 @@ async function withApp(fn, { project = PROJECT, rows = 30, cols = 100 } = {}) {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
+    }
+    for (const [key, descriptor] of paneSize) {
+      if (descriptor) Object.defineProperty(process.stdout, key, descriptor);
+      else delete process.stdout[key];
     }
     cleanup(dir);
   }
@@ -163,6 +179,47 @@ test("any other key cancels a reset", async () => {
   });
 });
 
+test("] and [ move the selected profile within its group and the selection follows it", async () => {
+  await withApp(async ({ send, frame, readGlobal, readProject }) => {
+    assert.match(frame(), /\[ \] order/, "the list names the keys");
+    await send("]"); // Builder (overridden here) goes below Scout in the global file
+    assert.deepEqual(readGlobal().profiles.map((entry) => entry.id), ["scout", "builder"]);
+    assert.deepEqual(readProject().profiles.map((entry) => entry.id), ["builder", "three-d"], "the override stays where it was");
+    assert.match(frame(), /moved builder down/);
+    assert.ok(frame().indexOf("Scout") < frame().indexOf("> Builder"), "Builder is listed second and still selected");
+    await send("]");
+    assert.match(frame(), /builder is already last among the global profiles/);
+    assert.match(frame(), /> Builder/, "the last global profile does not cross into the project group");
+    await send("[");
+    assert.deepEqual(readGlobal().profiles.map((entry) => entry.id), ["builder", "scout"]);
+    assert.ok(frame().indexOf("> Builder") < frame().indexOf("Scout"));
+  });
+});
+
+// QA round 1, T1b: six profiles in a 42-column pane, where a full detail line
+// is wider than the frame.
+const SIX = `${PROJECT}${["p", "q", "r", "s"]
+  .map((id) => `\n[[profiles]]\nid = "${id}"\nname = "QA ${id.toUpperCase()}"\nharness = "claude"\nmodel = "test-model"\neffort = "medium"\nwhen_to_use = "qa purpose"\n`)
+  .join("")}`;
+
+test("in a narrow pane the list keeps its names, the selection and the reorder hint after a move", async () => {
+  for (const pane of [{ cols: 42, rows: 31 }, { cols: 42, rows: 33 }, { cols: 42, rows: 20 }, { cols: 58, rows: 33 }]) {
+    await withApp(async ({ send, frame }) => {
+      const size = `${pane.cols}x${pane.rows}`;
+      assert.match(frame(), /\[ \] order/, `${size}: the footer names the reorder keys`);
+      for (const key of ["]", "]"]) {
+        await send(key); // a short status, then a long one that wraps
+        const screen = frame();
+        assert.ok(screen.indexOf("Scout") >= 0 && screen.indexOf("Scout") < screen.indexOf("> Builder"), `${size} after ${key}: names and the selection are shown`);
+        assert.match(screen, /\[ \] order/, `${size}: the hint stays after a move`);
+      }
+      assert.match(frame(), /builder is already last/);
+      const lines = frame().split("\n");
+      assert.ok(lines.length <= pane.rows + 1, `${size}: the frame fits the pane`);
+    }, { project: SIX, pane });
+  }
+});
+
 test("saving to global does not bake the project override into the global profile", async () => {
   await withApp(async ({ send, frame, readGlobal, readProject }) => {
     // Builder is overridden to effort=high here; rename it and save to global.
@@ -187,7 +244,7 @@ test("p saves only what differs from global as a project override", async () => 
 
 test("r in the editor puts a field back to global, and p then drops the empty override", async () => {
   await withApp(async ({ send, frame, readProject }) => {
-    await send("\r", DOWN, DOWN, DOWN); // Builder -> Effort (overridden to high)
+    await send("\r", DOWN, DOWN, DOWN, DOWN); // Builder -> Effort (overridden to high), past API
     assert.match(frame(), /≠ global: medium/);
     await send("r");
     assert.match(frame(), /Effort back to the global value/);

@@ -60,6 +60,28 @@ test("an edit made through view and saved to the project becomes an override of 
   });
 });
 
+test("env is edited with masked values: a masked entry keeps its secret, a typed one replaces it", async () => {
+  await withRegistry(async ({ act, globalFile }) => {
+    const opened = await act("open", { mode: "edit", id: "builder" });
+    const view = (draft, value) => act("view", { draft, kind: opened.kind, baseline: opened.baseline, set: { field: "env", value } });
+    const first = await view(opened.draft, "GEMINI_API_KEY=secret-1 MODE=fast");
+    await act("save", { draft: first.draft, baseline: opened.baseline, kind: opened.kind, target: "global" });
+
+    const reopened = await act("open", { mode: "edit", id: "builder" });
+    const shown = (await act("view", { draft: reopened.draft, kind: reopened.kind, baseline: reopened.baseline })).fields.find((row) => row.field === "env");
+    assert.equal(shown.text, "GEMINI_API_KEY=*** MODE=***");
+    assert.ok(!JSON.stringify((await act("state")).profiles).includes("secret-1"), "state must not carry the secret");
+
+    // Confirming the masked text unchanged, and changing only MODE, keeps the key.
+    const edited = await view(reopened.draft, "GEMINI_API_KEY=*** MODE=slow");
+    assert.deepEqual(edited.draft.env, { GEMINI_API_KEY: "secret-1", MODE: "slow" });
+    // A masked name with no stored value has nothing to keep.
+    assert.deepEqual((await view(reopened.draft, "OTHER=***")).draft.env, {});
+    await act("save", { draft: edited.draft, baseline: reopened.baseline, kind: reopened.kind, target: "global" });
+    assert.deepEqual({ ...readConfigFile(globalFile).profiles[0].env }, { GEMINI_API_KEY: "secret-1", MODE: "slow" });
+  });
+});
+
 test("remove asks before it deletes, and deletes only when confirmed", async () => {
   await withRegistry(async ({ act, globalFile }) => {
     const asked = await act("remove", { id: "builder", action: "delete" });

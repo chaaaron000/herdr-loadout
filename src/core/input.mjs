@@ -7,7 +7,7 @@
  */
 import fs from "node:fs";
 import { parse as parseToml } from "smol-toml";
-import { KNOWN_FIELDS, isPlainObject } from "./schema.mjs";
+import { KNOWN_FIELDS, isPlainObject, setOwn } from "./schema.mjs";
 
 /** Fields exposed as CLI flags, mapped to their profile key. */
 const FLAG_FIELDS = {
@@ -25,6 +25,8 @@ const FLAG_FIELDS = {
   "approval-policy": "approval_policy",
   "permission-mode": "permission_mode",
   notes: "notes",
+  auth: "auth",
+  api: "api",
 };
 
 /** Repeatable flags. */
@@ -138,7 +140,7 @@ export function profileFromFlags(values = {}) {
     for (const pair of list) {
       const result = parseEnvPair(pair);
       if (!result.ok) errors.push(result.error);
-      else env[result.key] = result.value;
+      else setOwn(env, result.key, result.value);
     }
     if (Object.keys(env).length > 0) profile.env = env;
   }
@@ -154,11 +156,11 @@ export function mergeProfileInput(payload = {}, flags = {}) {
   const merged = {};
   for (const [key, value] of Object.entries(payload)) {
     if (isPlainObject(value) || Array.isArray(value) || typeof value === "string" || typeof value === "number") {
-      merged[key] = value;
+      setOwn(merged, key, value);
     }
   }
   for (const [key, value] of Object.entries(flags)) {
-    if (value !== undefined) merged[key] = value;
+    if (value !== undefined) setOwn(merged, key, value);
   }
   const unknown = Object.keys(merged).filter((key) => !KNOWN_FIELDS.has(key));
   return { profile: merged, unknown };

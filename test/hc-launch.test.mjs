@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { quoteArg } from "../src/core/command.mjs";
 import { cleanup, tempDir } from "./helpers.mjs";
 
 const CLI = path.resolve("bin/herdr-loadout.mjs");
@@ -25,6 +26,15 @@ model = "p/m"
 effort = "low"
 when_to_use = "Work that needs a variable."
 env = { LOADOUT_PROBE = "hello" }
+
+[[profiles]]
+id = "quoted"
+name = "Quoted"
+harness = "pi"
+model = "p/m"
+effort = "low"
+when_to_use = "Work with a JSON argument."
+extra_args = ["--settings", '{"modelProvider":"gemini"}']
 `;
 
 /** A stand-in `pi` that echoes its environment variable and arguments, then exits 7. */
@@ -56,7 +66,7 @@ function withCli(fn) {
       HERDR_LOADOUT_OFFLINE: "1",
     });
     const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, env, encoding: "utf8" });
-    fn({ run, pi, root: dir });
+    fn({ run, pi, root: dir, env });
   } finally {
     cleanup(dir);
   }
@@ -74,6 +84,71 @@ test("launch --host hc gives the harness argv, or exec when the profile sets env
     const project = fs.realpathSync(root);
     assert.deepEqual(envy.argv, [process.execPath, CLI, "exec", "envy", "--host", "hc", "--project", project]);
   });
+});
+
+test("launch --host hc routes an argument with a double quote through exec", () => {
+  withCli(({ run, root }) => {
+    // Windows PowerShell 5.1 strips the quotes from a JSON argument it passes on.
+    const quoted = JSON.parse(run("launch", "quoted", "--json", "--host", "hc").stdout);
+    assert.deepEqual(quoted.argv, [process.execPath, CLI, "exec", "quoted", "--host", "hc", "--project", fs.realpathSync(root)]);
+  });
+});
+
+const hasSh = !spawnSync("sh", ["-c", "true"]).error;
+
+test("command keeps env values out of the TUI line and reads them when it runs", () => {
+  withCli(({ run, root, env }) => {
+    const result = run("command", "envy", "--name", "w1", "--pane", "p7");
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!result.stdout.includes("hello"), "the value must not be printed");
+    const lines = result.stdout.trim().split("\n");
+    assert.equal(lines.at(-1), "herdr agent start w1 --kind pi --pane p7 -- --model p/m --effort low");
+    const word = lines.find((line) => line.startsWith("#") && line.includes("--env"))?.match(/--env ("LOADOUT_PROBE=.*")$/)?.[1];
+    assert.ok(word, result.stdout);
+    if (hasSh) {
+      const expanded = spawnSync("sh", ["-c", `printf %s ${word}`], { cwd: root, env, encoding: "utf8" });
+      assert.equal(expanded.stdout, "LOADOUT_PROBE=hello", expanded.stderr);
+    }
+
+    const open = run("command", "plain", "--cwd", root).stdout.trim().split("\n");
+    assert.equal(open.at(-1), "herdr agent start <worker-name> --kind pi --pane <pane_id> -- --model p/m --effort low");
+  });
+});
+
+test("launch --json and show mask env values; env-value prints the real one", () => {
+  withCli(({ run }) => {
+    assert.deepEqual(JSON.parse(run("launch", "envy", "--json").stdout).env, { LOADOUT_PROBE: "***" });
+    assert.deepEqual(JSON.parse(run("show", "envy", "--json").stdout).env, { LOADOUT_PROBE: "***" });
+    assert.ok(!run("show", "envy").stdout.includes("hello"));
+    assert.equal(run("env-value", "envy", "LOADOUT_PROBE").stdout, "hello");
+    assert.equal(run("env-value", "envy", "MISSING").status, 1);
+  });
+});
+
+test("command prints an hc run line that sh parses back into the profile's argv", { skip: spawnSync("sh", ["-c", "true"]).error ? "no sh" : false }, () => {
+  withCli(({ run, pi }) => {
+    const cwd = path.resolve("/work dir");
+    const line = run("command", "plain", "--host", "hc", "--name", "w1", "--space", "s1", "--tab", "t1", "--cwd", cwd).stdout.trim().split("\n").at(-1);
+    const echo = `node -e 'console.log(JSON.stringify(process.argv.slice(1)))'`;
+    const parsed = JSON.parse(spawnSync("sh", ["-c", `${echo} ${line}`], { encoding: "utf8" }).stdout);
+    const fingerprint = parsed[14];
+    assert.match(fingerprint, /^herdr-loadout\.fingerprint=[0-9a-f]{12}$/);
+    assert.deepEqual(parsed, [
+      "hc", "run", "--bg", "--name", "w1", "--cwd", cwd, "--label", "herdr.space=s1", "--label", "herdr.tab=t1",
+      "--label", "herdr-loadout.profile=plain", "--label", fingerprint, "--", pi, "--model", "p/m", "--effort", "low",
+    ]);
+  });
+});
+
+test("quoteArg survives sh for values with quotes, spaces, and shell syntax", { skip: spawnSync("sh", ["-c", "true"]).error ? "no sh" : false }, () => {
+  const values = ['{"modelProvider":"gemini"}', "it's", "a b", "C:\\Program Files\\x", "$HOME", "`t", "x;y", "a|b", ""];
+  const echo = `node -e 'console.log(JSON.stringify(process.argv.slice(1)))'`;
+  const out = spawnSync("sh", ["-c", `${echo} ${values.map((value) => quoteArg(value, "sh")).join(" ")}`], { encoding: "utf8" }).stdout;
+  assert.deepEqual(JSON.parse(out), values);
+  // PowerShell doubles a single quote inside single quotes and quotes its array comma.
+  assert.equal(quoteArg("it's", "powershell"), "'it''s'");
+  assert.equal(quoteArg("a,b", "powershell"), "'a,b'");
+  assert.equal(quoteArg("C:\\x\\y", "powershell"), "C:\\x\\y");
 });
 
 test("exec starts the harness with the profile's env and returns its exit code", () => {

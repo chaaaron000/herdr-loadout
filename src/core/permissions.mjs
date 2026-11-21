@@ -1,3 +1,5 @@
+import { opencodeConfigPatch } from "./opencode.mjs";
+
 /** Per-harness permissions. Empty strings explicitly inherit harness settings. */
 export const PERMISSION_FIELDS = ["sandbox", "approval_policy", "permission_mode"];
 
@@ -82,23 +84,29 @@ export function permissionArgs(profile) {
   return args;
 }
 
-/** OpenCode accepts runtime permissions via inline JSON, rather than a CLI flag. */
-export function buildLaunchEnv(profile, inheritedEnv = process.env) {
+/**
+ * OpenCode takes runtime permissions, and under v2 its model and variant, via
+ * inline JSON config rather than CLI flags. `options.version` is the installed
+ * OpenCode version (see opencode.mjs).
+ */
+export function buildLaunchEnv(profile, inheritedEnv = process.env, options = {}) {
   const env = { ...profile.env };
-  if (profile.harness === "opencode" && profile.permission_mode && profile.permission_mode !== "auto") {
+  const patch = profile.harness === "opencode" ? opencodeConfigPatch(profile, options.version) : {};
+  if (Object.keys(patch).length > 0) {
     let config = {};
     const inlineConfig = env.OPENCODE_CONFIG_CONTENT ?? inheritedEnv.OPENCODE_CONFIG_CONTENT;
+    const reason = patch.permission ? "permission_mode is set" : "the launch sets the model";
     if (inlineConfig) {
       try {
         config = JSON.parse(inlineConfig);
       } catch {
-        throw new Error("env.OPENCODE_CONFIG_CONTENT must be valid JSON when permission_mode is set");
+        throw new Error(`env.OPENCODE_CONFIG_CONTENT must be valid JSON when ${reason}`);
       }
       if (!config || typeof config !== "object" || Array.isArray(config)) {
         throw new Error("env.OPENCODE_CONFIG_CONTENT must be a JSON object");
       }
     }
-    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config, permission: profile.permission_mode });
+    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config, ...patch });
   }
   return env;
 }

@@ -121,7 +121,8 @@ test("show prints labelled fields, usage text, and optionals", () => {
   assert.match(out, /Avoid when:\nPure research\./);
   assert.match(out, /Tags: implementation, refactor/);
   assert.match(out, /Extra args: --add-dir Assets/);
-  assert.match(out, /Env: FOO=bar/);
+  assert.match(out, /Env: FOO=\*\*\*/);
+  assert.ok(!out.includes("bar"), "env values may be secrets and are never shown");
   assert.match(out, /Notes:\npersonal note/);
 });
 

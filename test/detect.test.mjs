@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { buildLaunchArgs, claudeCatalogFromOmp, detectHarnesses, dryRun, effortLevels, EFFORT_LEVELS, listModels, which, NO_CATALOG } from "../src/core/detect.mjs";
-import { applyFieldValue, editableFields } from "../src/core/editor.mjs";
+import { applyFieldValue, editableFields, fieldDisplay, fieldOptions } from "../src/core/editor.mjs";
 import { cleanup, memoryFs, tempDir } from "./helpers.mjs";
 
 /** Run `fn` with an isolated state dir so no cached or machine catalog leaks in. */
@@ -134,10 +134,15 @@ test("buildLaunchArgs maps each harness to its native flags", () => {
     buildLaunchArgs({ harness: "codex", model: "m", effort: "high" }),
     ["-m", "m", "-c", "model_reasoning_effort=high"],
   );
-  // interactive opencode has no effort flag; --variant exists only on `run`
+  // interactive opencode v1 has no effort flag; --variant exists only on `run`
   assert.deepEqual(
     buildLaunchArgs({ harness: "opencode", model: "p/m", effort: "high" }),
     ["-m", "p/m"],
+  );
+  // v2's TUI rejects -m: the model goes through config, read by a private server
+  assert.deepEqual(
+    buildLaunchArgs({ harness: "opencode", model: "p/m", effort: "high" }, { version: "2.3.0" }),
+    ["--standalone"],
   );
   assert.deepEqual(
     buildLaunchArgs({ harness: "omp", model: "m", effort: "high" }),
@@ -165,12 +170,40 @@ test("an agy model id that carries its level replaces the effort flag", () => {
   );
 });
 
-test("the editor hides effort and follows the agy model id", () => {
+test("the editor shows an agy model once and its level as Effort", () => {
+  const catalog = {
+    models: [
+      { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+      { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+      { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
+      { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" },
+      { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+    ],
+  };
   const draft = { id: "s", name: "S", harness: "agy", model: "claude-sonnet-4-6", effort: "max", when_to_use: "x" };
-  assert.ok(editableFields(draft).includes("effort"));
-  const picked = applyFieldValue(draft, "model", "gemini-3.8-flash-low");
-  assert.equal(picked.effort, "low");
-  assert.ok(!editableFields(picked).includes("effort"));
+  const fields = editableFields(draft);
+  const options = (d, field) => fieldOptions(d, editableFields(d).indexOf(field), catalog, []);
+  assert.deepEqual(options(draft, "model").map((row) => [row.id, row.label]), [
+    ["gemini-3.1-pro", "Gemini 3.1 Pro"],
+    ["gemini-4-argon", "Gemini 4 Argon"],
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
+  ]);
+  assert.ok(fields.includes("effort"));
+
+  // Picking a model adds a level it offers: the current effort, else medium, else its first.
+  const argon = applyFieldValue(draft, "model", "gemini-4-argon", catalog);
+  assert.equal(argon.model, "gemini-4-argon-medium");
+  assert.equal(argon.effort, "medium");
+  assert.equal(applyFieldValue({ ...draft, effort: "high" }, "model", "gemini-4-argon", catalog).model, "gemini-4-argon-high");
+  assert.equal(applyFieldValue(draft, "model", "gemini-3.1-pro", catalog).model, "gemini-3.1-pro-high");
+  assert.equal(fieldDisplay(argon, "model"), "gemini-4-argon");
+
+  // Effort offers that model's levels, low to high, and rewrites the id's level.
+  assert.deepEqual(options(argon, "effort").map((row) => row.id), ["low", "medium", "high"]);
+  const low = applyFieldValue(argon, "effort", "low", catalog);
+  assert.deepEqual([low.model, low.effort], ["gemini-4-argon-low", "low"]);
+
   // a missing executable keeps the catalog lookup off the real agy CLI
   const mismatch = dryRun({ ...draft, model: "gemini-3.8-flash-low", effort: "high" }, { cache: false, executablePath: "no-such-agy" });
   assert.equal(mismatch.checks.find((check) => check.label.startsWith("effort")).ok, false);
