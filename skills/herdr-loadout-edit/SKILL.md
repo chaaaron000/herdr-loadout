@@ -205,9 +205,10 @@ Report the profile id and the file it landed in.
 
 ## Change the workflow
 
-The workflow is the set of choices orchestrators follow when they delegate: routing, how prompts,
-briefs, and reports look, how tabs are used, when a worker is closed or kept, and how workers
-coordinate. It is Markdown, in two layers:
+The workflow is the set of choices agents follow when they work in Herdr: what the agent talking to
+the user does itself and what it delegates, routing, how prompts, briefs, and reports look, how tabs
+are used, when a worker is closed or kept, and how workers coordinate. It is Markdown, in two
+layers:
 
 | Layer | Path | Purpose |
 |---|---|---|
@@ -220,8 +221,21 @@ coordinate. It is Markdown, in two layers:
   file; edit that copy. From then on it is the user's, and later changes to the built-in default do
   not reach it.
 
+The built-in default shares the work: the agent talking to the user works too and delegates where
+that helps. A user who wants that agent to only plan and delegate adds a rule like this one, which
+replaces the default's "You work too" (adjust it to what they asked):
+
+```markdown
+## Who does what
+
+- **You orchestrate; you do not do the work.** Plan, delegate, read reports, and answer the user.
+  Work yourself only to answer a question, read files, or make a few-line edit to one existing
+  file (a typo, a value, a sentence). New code, any test change, or a change to more than one
+  file goes to a worker, however small it looks. When unsure, delegate.
+```
+
 Put the rule where the user said it applies; when they did not say, ask. After a change,
-`$LOADOUT workflow` prints exactly what orchestrators will read; report the file you changed.
+`$LOADOUT workflow` prints exactly what agents will read; report the file you changed.
 
 **Brief and report templates.** `herdr-loadout task new` fills `brief.md` and `report.md` from
 `<project>/.herdr/templates/brief.md` and `report.md` when they exist, else from the built-in ones.

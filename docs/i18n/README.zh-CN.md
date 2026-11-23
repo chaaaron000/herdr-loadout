@@ -257,8 +257,8 @@ extra_args = ["--add-dir", "Assets"]
 
 ### 4. 项目 AGENTS.md 中的委派块
 
-技能只在 agent 已决定委派之后才会加载。因此“与用户对话的 agent 不亲自干活而是委派”“不使用 harness 内置 subagent”
-这样的规则，必须放在 harness 启动时一定会读的文件里。块的原文只有 `src/core/agents-md.md` 一处，CLI 原样输出和安装。
+技能只在 agent 已决定使用之后才会加载。因此“开始实现、QA、审查或探索之前先加载技能，并遵循用户的工作方式（workflow）”
+这样的提示，必须放在 harness 启动时一定会读的文件里。该块是中立的：哪些工作自己做、哪些交给 worker，由工作方式决定，而不是由块决定（见下文“工作方式”）。块的原文只有 `src/core/agents-md.md` 一处，CLI 原样输出和安装。
 
 ```bash
 herdr-loadout agents-md            # 状态: current | missing | outdated | declined（也支持 --json）
@@ -385,6 +385,10 @@ herdr plugin action invoke herdr-loadout.add-profile
 技能里只有命令，委派时的选择写在工作方式文件中：哪类 profile 负责哪种工作，
 提示词、brief、报告文件的格式，标签页的用法，何时关闭 worker、何时保留，以及 worker 之间如何协作。
 与 profile 一样分为两层。
+
+默认是分工：与用户对话的 agent 也亲自干活，把可并行的工作、独立 QA、调研以及更适合其他 profile 的任务交给 worker。
+若想让该 agent 只做计划和委派的编排者（orchestrator），就把这条规则写进工作方式（`herdr-loadout-edit` 技能里有示例）。
+用户在对话中说的话优先于工作方式。
 
 | 层 | 文件 | 用途 |
 |---|---|---|

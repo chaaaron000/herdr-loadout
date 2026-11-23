@@ -266,9 +266,10 @@ extra_args = ["--add-dir", "Assets"]
 
 ### 4. The delegation block in the project's AGENTS.md
 
-A skill loads only once an agent has decided to delegate. So the rules "the agent talking to the
-user delegates instead of doing the work" and "never use the harness's built-in subagents" have to
-live in the file every harness reads at startup. The block has one source,
+A skill loads only once an agent has decided to use it. So the pointer "before implementation, QA,
+review, or exploration, load the skill and follow the user's workflow" has to live in the file
+every harness reads at startup. The block is neutral: what the agent does itself and what it hands
+to workers is the workflow's call (see "Workflow" below). The block has one source,
 `src/core/agents-md.md`, which the CLI prints and installs as is.
 
 ```bash
@@ -404,6 +405,11 @@ The real value only comes out of `herdr-loadout env-value <id> <KEY>`. In the ap
 The skills hold only the commands; the choices made when delegating live in the workflow file: which profile family gets which kind of work,
 the prompt, brief, and report file formats, how to use tabs, when to close a worker and when to keep it, and how workers collaborate.
 Like profiles, it has two layers.
+
+The default shares the work: the agent talking to the user works too, and hands workers what can run
+in parallel, independent QA, research, and tasks another profile suits better. To make that agent an
+orchestrator that only plans and delegates, write that rule into the workflow (the
+`herdr-loadout-edit` skill has an example). What the user says in the conversation wins over the workflow.
 
 | Layer | File | Purpose |
 |---|---|---|

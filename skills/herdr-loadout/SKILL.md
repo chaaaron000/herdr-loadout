@@ -115,10 +115,11 @@ takes effect from the next session; harnesses read these files at startup.
 
 ## Read the workflow
 
-The workflow holds the choices this skill leaves open: which profile class takes which work, how a
-prompt, brief, and report look, how tabs are used, when a worker is closed or kept, and how workers
-coordinate. It is the global workflow followed by this project's rules, which win where the two
-conflict. Read it once per session, before the first delegation:
+The workflow holds the choices this skill leaves open: what you do yourself and what goes to a
+worker, which profile class takes which work, how a prompt, brief, and report look, how tabs are
+used, when a worker is closed or kept, and how workers coordinate. It is the global workflow
+followed by this project's rules, which win where the two conflict. What the user says in the
+conversation wins over both. Read it once per session, before you decide what to do yourself:
 
 ```bash
 $LOADOUT workflow

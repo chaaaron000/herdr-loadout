@@ -1,9 +1,10 @@
 /**
  * The delegation block in a project's always-loaded instructions file.
  *
- * Skills load only once an agent has decided to delegate, so the rule "delegate,
- * do not do the work yourself" has to live in the file every harness reads at
- * startup: `<project>/AGENTS.md`. The block sits between two marker lines and is
+ * Skills load only once an agent has decided to use them, so the pointer "load
+ * the skill and follow the user's workflow" has to live in the file every harness
+ * reads at startup: `<project>/AGENTS.md`. The block stays neutral; who does what
+ * is the workflow's call (`src/core/default-workflow.md`). The block sits between two marker lines and is
  * the only part of the file this module writes. Its text is the built-in
  * `src/core/agents-md.md`, so there is one source of truth.
  *

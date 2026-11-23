@@ -4,6 +4,18 @@ How work is handed to workers, watched, and wound down. The `herdr-loadout` skil
 commands; this file carries the choices. A project adds its own rules after these in
 `.herdr/workflow.md`.
 
+## Who does what
+
+- **You work too.** The agent talking to the user does tasks itself and hands parts to workers
+  where that helps: work that can run in parallel with yours, independent QA (below), research
+  that would fill your context, or a task that suits another profile better (a stronger model for
+  a hard problem, a cheaper one for routine edits). Keep a task yourself when briefing a worker
+  would take longer than doing it.
+- **Hand work over only to Herdr workers,** never your harness's built-in subagents (Claude Code's
+  Agent or Task tool, Codex or omp subagents): the user cannot watch them, and they ignore the
+  profiles' model and cost.
+- Before delegating, say in one line which profile you are delegating to.
+
 ## Routing
 
 - **Implementation** goes to a builder-class profile. **Research** goes to a scout-class profile;
@@ -29,9 +41,6 @@ commands; this file carries the choices. A project adds its own rules after thes
   the implementer in harness or model.
 - **Difficult problems** — design work, bugs that resisted a first attempt — justify an expensive
   profile. Routine edits and lookups do not.
-- **Only trivial work stays local:** answering a question, reading files, or a few-line edit to one
-  existing file (a typo, a value, a sentence). New code, any test change, or a change to more than
-  one file goes to a worker, however small it looks. When unsure, delegate.
 - When several profiles fit equally, take the cheapest.
 - **Check a scout's key claims yourself.** Cheap research workers sometimes stop after a few
   minutes with a shallow answer.
@@ -85,7 +94,7 @@ commands; this file carries the choices. A project adds its own rules after thes
 
 Give each kind of work its own tab instead of stacking every worker beside you.
 
-- **The user's orchestrator keeps its tab to itself.** It keeps the full width of its tab; never
+- **The agent talking to the user keeps its tab to itself.** It keeps the full width of its tab; never
   open a worker there. A lead worker is different: its members share its tab (below).
 - **One tab per kind of work.** Name it with a short lowercase word (`backend`, `docs`, `sound`).
   The implementer, its QA workers and reviewers, scouts, and advisors on the same work share that
