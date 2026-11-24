@@ -6,6 +6,9 @@ commands; this file carries the choices. A project adds its own rules after thes
 
 ## Who does what
 
+- **The user's words decide first.** When the user names what a worker does ("have a scout find
+  X"), only that goes to a worker; the rest of the request is yours to do. A request addressed to
+  you ("implement it") is yours, not a worker's.
 - **You work too.** The agent talking to the user does tasks itself and hands parts to workers
   where that helps: work that can run in parallel with yours, independent QA (below), research
   that would fill your context, or a task that suits another profile better (a stronger model for
@@ -15,10 +18,15 @@ commands; this file carries the choices. A project adds its own rules after thes
   Agent or Task tool, Codex or omp subagents): the user cannot watch them, and they ignore the
   profiles' model and cost.
 - Before delegating, say in one line which profile you are delegating to.
+- **Ask before starting an `expensive` profile the user did not ask for,** in one line naming the
+  profile and the task, and wait for the answer. Cheap and normal profiles need no ask.
 
 ## Routing
 
-- **Implementation** goes to a builder-class profile. **Research** goes to a scout-class profile;
+These rules choose the profile once you have decided to hand work over. They never decide
+*whether* to hand it over: "Who does what" and the user decide that.
+
+- **Implementation** you hand over goes to a builder-class profile. **Research** goes to a scout-class profile;
   it must not edit files.
 - **After substantial implementation, the next step is independent QA** by a qa-class profile that
   differs from the implementer in harness or model. QA by the profile that wrote the code is not

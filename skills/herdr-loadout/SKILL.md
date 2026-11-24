@@ -1,6 +1,6 @@
 ---
 name: herdr-loadout
-description: "Orchestrate work in a Herdr session through Herdr workers that run on named agent profiles. Use whenever you work inside Herdr (HERDR_ENV=1 with the `herdr` CLI in the TUI, or HC_TERMINAL_ID set with the `hc` CLI in the Herdr app) and a task needs implementation, QA, code review, or repository exploration: load it before doing that work yourself or handing it to your harness's built-in subagents. Also covers choosing a worker's role, harness, model, or effort, and adding the delegation block to the project's AGENTS.md. A worker given a `[Worker-...]` prompt needs it only when its brief makes it a lead."
+description: "Orchestrate work in a Herdr session through Herdr workers that run on named agent profiles. Use whenever you work inside Herdr (HERDR_ENV=1 with the `herdr` CLI in the TUI, or HC_TERMINAL_ID set with the `hc` CLI in the Herdr app) and a task needs implementation, QA, code review, or repository exploration: load it to decide what you do yourself and what goes to a worker, before using your harness's built-in subagents. Loading it does not mean delegating. Also load it when the user states a standing rule for how work is done from now on. Also covers choosing a worker's role, harness, model, or effort, and adding the delegation block to the project's AGENTS.md. A worker given a `[Worker-...]` prompt needs it only when its brief makes it a lead."
 ---
 
 # Herdr Loadout — orchestrate work with agent profiles
@@ -125,8 +125,18 @@ conversation wins over both. Read it once per session, before you decide what to
 $LOADOUT workflow
 ```
 
-Every step below that says "as the workflow says" follows it. The user edits it, not you; the
-`herdr-loadout-edit` skill covers changing it.
+Delegate a task only when the workflow or the user gives it to a worker. Everything else you do
+yourself, and the [Delegate](#delegate) steps do not apply to it.
+
+Every step below that says "as the workflow says" follows it.
+
+**Change the workflow only on the user's word.** A standing rule the user states in conversation
+("from now on, when X, have Y do it", "앞으로 …는 …로 하자") is a workflow change: load the
+`herdr-loadout-edit` skill, record the rule as its "Record a rule the user states" section says,
+and follow it from then on. Record it in the workflow, not only in your harness's own memory:
+workers on other harnesses and later sessions read the workflow, never your memory. A one-off
+instruction for the current task ("have a scout look this up") is not a standing rule; follow it
+without recording it.
 
 ## Delegate
 

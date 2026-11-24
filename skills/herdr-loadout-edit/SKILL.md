@@ -1,6 +1,6 @@
 ---
 name: herdr-loadout-edit
-description: "Create or change agent profiles in the herdr-loadout registry: add a role, change which harness/model/effort a role uses, set a project-specific override, or import a set of profiles. Also changes the delegation workflow (routing, briefs, tabs, when workers close). Use when the user asks to add, edit, tune, or remove a profile or a workflow rule, or when delegation failed because no suitable profile exists."
+description: "Create or change agent profiles in the herdr-loadout registry: add a role, change which harness/model/effort a role uses, set a project-specific override, or import a set of profiles. Also changes the delegation workflow (routing, briefs, tabs, when workers close). Use when the user asks to add, edit, tune, or remove a profile or a workflow rule, when the user states a standing rule for how work is done from now on (\"from now on, when X, have Y do it\"), or when delegation failed because no suitable profile exists."
 ---
 
 # Herdr Loadout — edit agent profiles
@@ -236,6 +236,32 @@ replaces the default's "You work too" (adjust it to what they asked):
 
 Put the rule where the user said it applies; when they did not say, ask. After a change,
 `$LOADOUT workflow` prints exactly what agents will read; report the file you changed.
+
+### Record a rule the user states
+
+A user who says how work should go from now on ("from now on, when X, have Y do it",
+"앞으로 …는 …로 하자") is setting a workflow rule, even without asking you to edit anything.
+Record it in the workflow, not only in your harness's own memory: other harnesses and later
+sessions read the workflow.
+
+1. **Scope.** Use the one the user named: this project, or every project. When they named none,
+   ask in one line.
+2. **Profiles by id.** Name a worker by its profile id, never its harness, model, or effort. Check
+   the id exists in `$LOADOUT list --compact`; when none fits, say so and offer to add one.
+3. **Where.** Create the file if needed (`$LOADOUT workflow init --project .`, or
+   `$LOADOUT workflow init` for the global one), then add the rule under a
+   `## Rules from the user` section at the end, creating the section the first time. A rule that
+   covers the same situation as an existing one replaces it; do not keep both.
+4. **Shape.** One bullet: the situation in bold, then who does what and how, in the user's terms.
+
+   ```markdown
+   ## Rules from the user
+
+   - **Unity UI reference research:** a `scout` worker finds references; you implement
+     yourself from its report.
+   ```
+
+5. **Report** the rule as written and the file it went into, then follow it from this turn on.
 
 **Brief and report templates.** `herdr-loadout task new` fills `brief.md` and `report.md` from
 `<project>/.herdr/templates/brief.md` and `report.md` when they exist, else from the built-in ones.
